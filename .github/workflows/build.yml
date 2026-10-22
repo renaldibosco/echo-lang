@@ -1,0 +1,76 @@
+name: Test and build APK
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[ci-skip]')"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - id: tests
+        name: Run Echo tests
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          pip install pytest
+          cd python && python -m pytest -q 2>&1 | tee ../tests.log
+      - id: tools
+        name: Get Gradle
+        run: |
+          echo "sdk.dir=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" > android/local.properties
+          wget -q https://services.gradle.org/distributions/gradle-8.9-bin.zip -O /tmp/g.zip
+          unzip -q /tmp/g.zip -d /tmp
+          echo "/tmp/gradle-8.9/bin" >> $GITHUB_PATH
+      - id: build
+        name: Build release APK
+        run: |
+          set -o pipefail
+          cd android && gradle :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee ../build.log
+      - name: Name APK
+        run: |
+          V=$(grep versionName android/app/build.gradle | sed "s/.*'\(.*\)'.*/\1/")
+          echo "V=$V" >> $GITHUB_ENV
+          cp android/app/build/outputs/apk/release/app-release.apk "Echo-Lang-$V.apk"
+          ls -l Echo-Lang-*.apk
+      - name: Publish to apk branch
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          mkdir /tmp/out && cp Echo-Lang-*.apk /tmp/out/
+          git checkout --orphan apk
+          git rm -rf . > /dev/null
+          cp /tmp/out/*.apk .
+          git add *.apk
+          git commit -m "APK ${V} [ci-skip]"
+          git push -f origin apk
+      - name: Save logs
+        if: always()
+        run: |
+          cp build.log /tmp/build.log 2>/dev/null || echo "no gradle log" > /tmp/build.log
+          cp tests.log /tmp/tests.log 2>/dev/null || echo "no test log" > /tmp/tests.log
+          echo "run ${{ github.run_number }} ${{ job.status }} $(date -u) tests=${{ steps.tests.outcome }} tools=${{ steps.tools.outcome }} build=${{ steps.build.outcome }}" > /tmp/status.txt
+          git config user.name "github-actions"; git config user.email "actions@github.com"
+          git checkout -f --orphan ci-log
+          git rm -rf --cached . > /dev/null 2>&1 || true
+          rm -rf ./* .github 2>/dev/null || true
+          cp /tmp/build.log /tmp/tests.log /tmp/status.txt .
+          git add build.log tests.log status.txt
+          git commit -m "CI log ${{ github.run_number }} [ci-skip]"
+          git push -f origin ci-log
+      - name: GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.V }}-${{ github.run_number }}
+          name: Echo Lang ${{ env.V }}
+          files: Echo-Lang-*.apk

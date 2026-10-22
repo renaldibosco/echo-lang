@@ -1,0 +1,48 @@
+# Biology with Echo: from a gene to primers, protein and a gel
+set gene to dna("""
+>GFP
+ATGGCTAGCAAAGGAGAAGAACTTTTCACTGGAGTTGTCCCAATTCTTGTTGAATTAGATGGTGATGTTAATGGGCACAAATTTTCTGTCAGTGGAGAGGGTGAAGGT
+GATGCAACATACGGAAAACTTACCCTTAAATTTATTTGCACTACTGGAAAACTACCTGTTCCATGGCCAACACTTGTCACTACTTTCTCTTATGGTGTTCAATGCTTTT
+CAAGATACCCAGATCATATGAAACAGCATGACTTTTTCAAGAGTGCCATGCCCGAAGGTTATGTACAGGAAAGAACTATATTTTTCAAAGATGACGGGAACTACAAGACA
+CGTGCTGAAGTCAAGTTTGAAGGTGATACCCTTGTTAATAGAATCGAGTTAAAAGGTATTGATTTTAAAGAAGATGGAAACATTCTTGGACACAAATTGGAATACAACTAT
+AACTCACACAATGTATACATCATGGCAGACAAACAAAAGAATGGAATCAAAGTTAACTTCAAAATTAGACACAACATTGAAGATGGAAGCGTTCAACTAGCAGACCATTAT
+CAACAAAATACTCCAATTGGCGATGGCCCTGTCCTTTTACCAGACAACCATTACCTGTCCACACAATCTGCCCTTTCGAAAGATCCCAACGAAAAGAGAGACCACATGGTC
+CTTCTTGAGTTTGTAACAGCTGCTGGGATTACACATGGCATGGATGAACTATACAAATAA
+""")
+
+say "Length: {length(gene)} bp"
+say "GC: {gc(gene)}%   AT: {at(gene)}%"
+say "Bases:", base_counts(gene)
+
+# genes (open reading frames)
+for each orf in find_orfs(gene, 100)
+    say "ORF on strand {orf.strand}: {orf.start}-{orf.end} ({length(orf.protein)} aa)"
+end
+
+# protein facts
+set protein to translate(gene, to_stop: true)
+set info to protein_info(protein)
+say "Protein: {info.length} aa, {round(info.mass / 1000, 1)} kDa, pI {info.pi}"
+
+# primers: the best pair, with clear GC content
+set pair to design_primers(gene, product_min: 300, product_max: 700)
+say ""
+say "Forward: {pair.forward}  GC {pair.gc_forward}%  Tm {pair.tm_forward} °C"
+say "Reverse: {pair.reverse}  GC {pair.gc_reverse}%  Tm {pair.tm_reverse} °C"
+say "Product: {pair.product} bp"
+if length(pair.problems) == 0 then
+    say "Both primers pass every check."
+else
+    say "Watch out:", pair.problems
+end
+say pcr_program(pair.forward, pair.reverse, pair.product)
+
+# enzymes and a virtual gel
+say ""
+say "Cut sites:", restriction_sites(gene)
+set cut to digest(gene, ["NcoI", "NdeI"])
+say "NcoI + NdeI fragments:", cut
+say gel([[pair.product], cut])
+
+# method style works too
+say "Reverse complement starts with", gene.reverse_complement()[0:20]

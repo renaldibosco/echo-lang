@@ -1,0 +1,32 @@
+# Your first Echo program
+say "Hello from Echo!"
+
+set name to "Reno"
+set age to 18
+say "Hi {name}, next year you will be {age + 1}."
+
+# lists and loops
+set fruits to ["mango", "banana", "jackfruit"]
+for each fruit in fruits
+    say "I like " + fruit
+end
+
+for i from 1 to 5
+    if i == 3 then
+        continue
+    end
+    say i, "squared is", i ^ 2
+end
+
+# functions
+define greet(person, greeting = "Vanakkam")
+    return greeting + ", " + person + "!"
+end
+say greet("Jane")
+say greet("Paul", greeting: "Hello")
+
+# a map and a record
+record Student(name, course)
+set s to Student("Paul", "B.Sc. Biotechnology")
+say s
+say s.name + " studies " + s.course

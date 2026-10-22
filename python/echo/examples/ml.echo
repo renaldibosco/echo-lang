@@ -1,0 +1,27 @@
+# Data and small machine-learning models
+
+# Bradford assay standard curve: protein (ug/mL) vs absorbance
+set conc to [0, 125, 250, 500, 750, 1000]
+set absorb to [0.0, 0.11, 0.21, 0.43, 0.63, 0.84]
+set line to linear_fit(conc, absorb)
+say "slope {format(line.slope, 5)}, intercept {format(line.intercept, 4)}, R² {format(line.r2, 4)}"
+
+# find an unknown sample's concentration from its absorbance
+set unknown to 0.52
+say "Sample with A = {unknown} has about {round((unknown - line.intercept) / line.slope)} ug/mL"
+
+say "mean", mean(absorb), "stdev", format(stdev(absorb), 3)
+
+# classify: is a sequence GC-rich? features = [gc %, length]
+set X to [[35, 500], [38, 900], [42, 700], [55, 600], [61, 800], [66, 400], [30, 300], [58, 1000]]
+set y to [0, 0, 0, 1, 1, 1, 0, 1]
+set model to train("logistic", X, y)
+say "accuracy on training data:", accuracy(model, X, y)
+say "GC 63%, 750 bp ->", predict(model, [63, 750])
+
+set knn to train("knn", X, y, k: 3)
+say "kNN says GC 40% ->", predict(knn, [40, 650])
+
+# group samples with k-means
+set groups to cluster([[1, 2], [1.5, 1.8], [5, 8], [8, 8], [1, 0.6], [9, 11]], 2)
+say "clusters:", groups.labels

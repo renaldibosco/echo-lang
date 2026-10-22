@@ -1,0 +1,17 @@
+# AI in Echo (needs your own key, saved only on your device)
+# Run once:  ai_setup("claude", "YOUR-KEY")    or "gemini" / "openai"
+say ai_status()
+
+try
+    ask ai "In two lines, what does a GC clamp do in a PCR primer?" into answer
+    say answer
+
+    # let the AI write Echo code for you
+    set code to ai_code("count how many times ATG appears in a DNA sequence")
+    say "AI wrote:"
+    say code
+
+    say ai_explain("ATGGCTAGCAAAGGAGAAGAAC")
+catch problem
+    say "AI is not ready:", problem
+end

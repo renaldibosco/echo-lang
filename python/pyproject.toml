@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "echo-lang"
+version = "1.0.0"
+description = "Echo: an English-like programming language for biology, logic gates, cyber-security and AI"
+requires-python = ">=3.8"
+authors = [{ name = "Paul Renaldi" }]
+license = { text = "MIT" }
+
+[project.scripts]
+echolang = "echo.__main__:main"
+
+[tool.setuptools]
+packages = ["echo", "echo.lib", "echo.transpile"]
+
+[tool.setuptools.package-data]
+echo = ["examples/*.echo", "java/echo/*.java"]

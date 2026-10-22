@@ -1,0 +1,22 @@
+# Cyber-security basics (everything runs on your device)
+set secret to "Meet at the lab at 5"
+set hidden to caesar(secret, 3)
+say "Caesar:", hidden
+say "Back:", caesar(hidden, -3)
+
+say "SHA-256 of 'echo':", sha256("echo")
+say "Base64:", base64_encode("Echo language")
+
+set key to "BIO"
+set v to vigenere("ATTACK AT DAWN", key)
+say "Vigenere:", v, "->", vigenere(v, key, decode: true)
+
+for each pw in ["password", "Reno2026", random_password(16)]
+    set s to password_strength(pw)
+    say pw, "->", s.label, "({s.bits} bits)"
+end
+
+# crack a Caesar message by trying every shift
+for each line in caesar_crack("Wkh jhqh lv JIS")[0:5]
+    say line
+end

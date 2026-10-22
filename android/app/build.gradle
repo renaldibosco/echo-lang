@@ -1,0 +1,52 @@
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python'
+}
+
+android {
+    namespace 'com.renaldibosco.echolang'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.renaldibosco.echolang'
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName '1.0.0'
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
+        }
+    }
+
+    signingConfigs {
+        release {
+            storeFile file('echo-release.jks')
+            storePassword 'echolang2026'
+            keyAlias 'echo'
+            keyPassword 'echolang2026'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version '3.12'
+    }
+    sourceSets {
+        main {
+            srcDir '../../python'
+        }
+    }
+}

@@ -1,0 +1,49 @@
+# Control flow: loops, break, continue, while, try, recursion
+
+# find the first codon that is a stop codon
+set seq to "ATGGCTTTAGGATGA"
+for i from 0 to length(seq) - 3 step 3
+    set codon to seq[i:i + 3]
+    if codon in stop_codons then
+        say "Stop codon {codon} at position {i + 1}"
+        break
+    end
+end
+
+# skip odd numbers
+set evens to []
+for each n in range(1, 10)
+    if n % 2 == 1 then
+        continue
+    end
+    add n to evens
+end
+say "Evens:", evens
+
+# while loop
+set count to 3
+while count > 0
+    say "countdown", count
+    count -= 1
+end
+
+# recursion
+define factorial(n)
+    if n <= 1 then
+        return 1
+    end
+    return n * factorial(n - 1)
+end
+say "10! =", factorial(10)
+
+# handle mistakes
+try
+    say 10 / 0
+catch problem
+    say "Caught:", problem
+end
+
+# functions as values
+set double to fn(x) -> x * 2
+say map([1, 2, 3], double)
+say filter(range(1, 20), fn(n) -> n % 7 == 0)
