@@ -19,12 +19,28 @@ jobs:
         with:
           python-version: '3.12'
       - id: tests
-        name: Run Echo tests
-        continue-on-error: true
+        name: Run Echo tests (a failure stops the build)
         run: |
           set -o pipefail
           pip install pytest
           cd python && python -m pytest -q 2>&1 | tee ../tests.log
+      - name: Check and format-check the examples
+        run: |
+          cd python
+          for f in echo/examples/*.echo; do python -m echo check "$f"; done
+          python -m echo fmt --check echo/examples/*.echo
+      - name: Write the signing key from secrets
+        env:
+          KEY_B64: ${{ secrets.ECHO_KEYSTORE_BASE64 }}
+          KEY_PW: ${{ secrets.ECHO_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEY_B64" ] || [ -z "$KEY_PW" ]; then
+            echo "::error::Add the secrets ECHO_KEYSTORE_BASE64 and ECHO_KEYSTORE_PASSWORD (Settings > Secrets and variables > Actions), then run this workflow again."
+            exit 1
+          fi
+          echo "$KEY_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "ECHO_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> $GITHUB_ENV
+          echo "ECHO_KEYSTORE_PASSWORD=$KEY_PW" >> $GITHUB_ENV
       - id: tools
         name: Get Gradle
         run: |
@@ -33,16 +49,17 @@ jobs:
           unzip -q /tmp/g.zip -d /tmp
           echo "/tmp/gradle-8.9/bin" >> $GITHUB_PATH
       - id: build
-        name: Build release APK
+        name: Build release APK and App Bundle
         run: |
           set -o pipefail
-          cd android && gradle :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee ../build.log
+          cd android && gradle :app:assembleRelease :app:bundleRelease --no-daemon --stacktrace 2>&1 | tee ../build.log
       - name: Name APK
         run: |
           V=$(grep versionName android/app/build.gradle | sed "s/.*'\(.*\)'.*/\1/")
           echo "V=$V" >> $GITHUB_ENV
           cp android/app/build/outputs/apk/release/app-release.apk "Echo-Lang-$V.apk"
-          ls -l Echo-Lang-*.apk
+          cp android/app/build/outputs/bundle/release/app-release.aab "Echo-Lang-$V.aab"
+          ls -l Echo-Lang-*
       - name: Publish to apk branch
         run: |
           git config user.name "github-actions"
@@ -73,4 +90,6 @@ jobs:
         with:
           tag_name: v${{ env.V }}-${{ github.run_number }}
           name: Echo Lang ${{ env.V }}
-          files: Echo-Lang-*.apk
+          files: |
+            Echo-Lang-*.apk
+            Echo-Lang-*.aab

@@ -11,25 +11,28 @@ android {
         applicationId 'com.renaldibosco.echolang'
         minSdk 24
         targetSdk 34
-        versionCode 2
-        versionName '2.0.0'
+        // every CI run gets a higher number automatically
+        versionCode((System.getenv('GITHUB_RUN_NUMBER') ?: '2').toInteger())
+        versionName '2.0.1'
         ndk {
             abiFilters 'arm64-v8a', 'x86_64'
         }
     }
 
+    // The signing key never lives in the repo. CI writes it from the ECHO_KEYSTORE_BASE64 secret.
     signingConfigs {
         release {
-            storeFile file('echo-release.jks')
-            storePassword 'echolang2026'
-            keyAlias 'echo'
-            keyPassword 'echolang2026'
+            storeFile file(System.getenv('ECHO_KEYSTORE_PATH') ?: 'release.jks')
+            storePassword System.getenv('ECHO_KEYSTORE_PASSWORD')
+            keyAlias System.getenv('ECHO_KEY_ALIAS') ?: 'echo'
+            keyPassword System.getenv('ECHO_KEY_PASSWORD') ?: System.getenv('ECHO_KEYSTORE_PASSWORD')
         }
     }
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true          // R8: shrink and obfuscate the Java code
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
         }
     }
