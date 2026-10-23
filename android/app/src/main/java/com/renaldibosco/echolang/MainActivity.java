@@ -55,15 +55,15 @@ public class MainActivity extends Activity {
             NUMBER = 0xFF79C0FF, BIO = 0xFF7EE787, ERROR = 0xFFFF7B72;
 
     static final Pattern P_COMMENT = Pattern.compile("#[^\\n]*");
-    static final Pattern P_STRING = Pattern.compile("\"\"\"[\\s\\S]*?\"\"\"|\"[^\"\\n]*\"|'[^'\\n]*'");
+    static final Pattern P_STRING = Pattern.compile("\"\"\"[\\s\\S]*?\"\"\"|\"[^\"\\n]*\"");
     static final Pattern P_NUMBER = Pattern.compile("\\b\\d+(\\.\\d+)?\\b");
     static final Pattern P_KEYWORD = Pattern.compile("\\b(set|to|say|ask|into|if|then|else|end|repeat|times|while|for|each|in|from|step|"
-            + "break|continue|stop|skip|define|return|try|catch|fail|use|record|fn|add|and|or|not|xor|nand|nor|xnor|is|"
-            + "true|false|yes|no|nothing|global|pass|forever|ai)\\b");
-    static final Pattern P_BIO = Pattern.compile("\\b(dna|gc|at|gc_count|base_counts|complement|reverse_complement|revcomp|transcribe|"
-            + "translate|find_orfs|find_motif|tm|primer_check|primer_info|design_primers|pcr_program|restriction_sites|digest|"
-            + "align|protein_mass|isoelectric_point|gravy|protein_info|parse_fasta|read_fasta|to_fasta|gel|dilute|copy_number|"
-            + "mutate|hamming|codon_usage|enzymes|truth_table|half_adder|full_adder|gate|train|predict|linear_fit|cluster)\\b");
+            + "break|continue|define|return|try|catch|fail|use|as|record|fn|add|and|or|not|xor|nand|nor|xnor|"
+            + "true|false|nothing|global)\\b");
+    /** Module names (bio.gc, math.sqrt ...) and type names (number, dna, list of text ...). */
+    static final Pattern P_BIO = Pattern.compile("\\b(bio|math|random|file|json|time|gates|cyber|stats|ml|ai)(?=\\.)"
+            + "|(?<=:\\s?)\\b(number|integer|text|boolean|list|map|function|any|dna|rna|protein)\\b"
+            + "|(?<=->\\s?)\\b(number|integer|text|boolean|list|map|function|any|dna|rna|protein|nothing)\\b");
 
     EditText editor;
     TextView output, status;
@@ -167,6 +167,7 @@ public class MainActivity extends Activity {
                 button("→ Java", v -> convert(true), PANEL),
                 button("→ Python", v -> convert(false), PANEL),
                 button("Check", v -> checkCode(), PANEL),
+                button("Format", v -> formatCode(), PANEL),
                 button("AI key", v -> aiSettings(), PANEL),
                 button("Guide", v -> showGuide(), PANEL),
                 button("Share", v -> shareCode(), PANEL)));
@@ -438,9 +439,31 @@ public class MainActivity extends Activity {
     }
 
     void checkCode() {
-        String err = app.callAttr("check", editor.getText().toString()).toString();
-        if (err.isEmpty()) toast("No problems found ✓");
-        else new AlertDialog.Builder(this).setTitle("Problem").setMessage(err).setPositiveButton("OK", null).show();
+        final String code = editor.getText().toString();
+        String report = app.callAttr("check", code).toString();
+        if (report.isEmpty()) { toast("No problems found ✓"); return; }
+        AlertDialog.Builder b = new AlertDialog.Builder(this).setTitle("Check").setView(codeView(report))
+                .setPositiveButton("OK", null);
+        if (app.callAttr("needs_upgrade", code).toBoolean())
+            b.setNeutralButton("Upgrade to Echo 2", (d, w) -> {
+                editor.setText(app.callAttr("upgrade", code).toString());
+                toast("Upgraded. Press Check again.");
+            });
+        b.show();
+    }
+
+    void formatCode() {
+        String code = editor.getText().toString();
+        String result = app.callAttr("format", code).toString();
+        if (result.startsWith("Error ")) {
+            new AlertDialog.Builder(this).setTitle("Can't format yet").setMessage(result).setPositiveButton("OK", null).show();
+            return;
+        }
+        if (result.equals(code)) { toast("Already formatted ✓"); return; }
+        int pos = Math.min(editor.getSelectionStart(), result.length());
+        editor.setText(result);
+        editor.setSelection(Math.max(0, pos));
+        toast("Formatted");
     }
 
     void showGuide() {

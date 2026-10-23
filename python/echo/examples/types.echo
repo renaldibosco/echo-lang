@@ -1,0 +1,35 @@
+# Types catch mistakes early. They are optional: add them where they help.
+# Run `echolang check types.echo` to find type problems without running the program.
+
+# variables keep their declared type
+set primer: dna to "AGAGTTTGATCATGGCTCAG"
+set salt_mm: number to 50
+set notes: list of text to ["16S rRNA", "universal forward"]
+
+# parameters and results
+define melting_point(seq: dna, salt: number = 50) -> number
+    return bio.tm(seq, na: salt)
+end
+say "Tm of {primer}: {melting_point(primer, salt: salt_mm)} °C"
+
+# records with typed fields
+record Primer(name: text, seq: dna, tm: number = 0)
+set p27f to Primer("27F", primer)
+set p27f.tm to melting_point(p27f.seq)
+say p27f
+
+# a value that may be missing
+define find_enzyme(name: text) -> text or nothing
+    if name in bio.enzymes() then
+        return name
+    end
+    return nothing
+end
+say find_enzyme("EcoRI"), find_enzyme("NotAnEnzyme")
+
+# a wrong type stops with a clear error (E302) instead of a strange result later
+try
+    set primer to primer + "XYZ"
+catch problem
+    say problem.code, problem.message
+end

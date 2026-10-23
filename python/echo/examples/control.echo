@@ -1,0 +1,49 @@
+# Control flow: loops, break, continue, while, try, recursion, functions as values
+
+# find the first stop codon, reading in steps of 3
+set seq: dna to "ATGGCTTTAGGATGA"
+for i from 0 to length(seq) - 3 step 3
+    set codon to seq[i:i + 3]
+    if codon in bio.stop_codons then
+        say "Stop codon {codon} at position {i + 1}"
+        break
+    end
+end
+
+# keep only even numbers
+set evens to []
+for each n in range(1, 10)
+    if n % 2 == 1 then
+        continue
+    end
+    add n to evens
+end
+say "Evens:", evens
+
+# while loop
+set remaining to 3
+while remaining > 0
+    say "countdown", remaining
+    set remaining to remaining - 1
+end
+
+# recursion
+define factorial(n: integer) -> integer
+    if n <= 1 then
+        return 1
+    end
+    return n * factorial(n - 1)
+end
+say "10! =", factorial(10)
+
+# handle errors: the caught value is an Error record with code, message and line
+try
+    say 10 / 0
+catch problem
+    say "Caught {problem.code}: {problem.message}"
+end
+
+# functions are values
+set double to fn(x: number) -> x * 2
+say map([1, 2, 3], double)
+say filter(range(1, 20), fn(n) -> n % 7 == 0)

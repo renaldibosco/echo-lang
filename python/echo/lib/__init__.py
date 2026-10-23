@@ -10,9 +10,7 @@ def builtin(name, category, doc="", needs_interp=False, aliases=()):
         b = Builtin(name, fn, needs_interp=needs_interp, doc=doc)
         REGISTRY[name] = b
         CATEGORIES.setdefault(category, []).append((name, doc))
-        for a in aliases:
-            REGISTRY[a] = Builtin(a, fn, needs_interp=needs_interp, doc=doc)
-        return fn
+        return fn  # Echo 2 has one name per function, so `aliases` are ignored
     return wrap
 
 

@@ -32,20 +32,6 @@
       ]
     },
     {
-      "name": "string.quoted.single.echo",
-      "begin": "'",
-      "end": "'",
-      "patterns": [
-        {
-          "name": "constant.character.escape.echo",
-          "match": "\\\\."
-        },
-        {
-          "include": "#interp"
-        }
-      ]
-    },
-    {
       "match": "\\b(define)\\s+([A-Za-z_][A-Za-z0-9_]*)",
       "captures": {
         "1": {
@@ -69,23 +55,27 @@
     },
     {
       "name": "keyword.control.echo",
-      "match": "\\b(set|to|say|ask|into|if|then|else|end|repeat|times|while|for|each|in|from|step|break|continue|stop|skip|define|return|try|catch|fail|use|record|fn|add|global|pass|forever)\\b"
+      "match": "\\b(set|to|say|ask|into|if|then|else|end|repeat|times|while|for|each|in|from|step|break|continue|define|return|try|catch|fail|use|as|record|fn|add|global)\\b"
     },
     {
       "name": "keyword.operator.logical.echo",
-      "match": "\\b(and|or|not|xor|nand|nor|xnor|is)\\b"
+      "match": "\\b(and|or|not|xor|nand|nor|xnor)\\b"
+    },
+    {
+      "name": "storage.type.echo",
+      "match": "(?<=:\\s|:|->\\s|\\bof\\s)\\b(number|integer|text|boolean|list|map|function|any|dna|rna|protein|nothing)\\b"
     },
     {
       "name": "constant.language.echo",
-      "match": "\\b(true|false|yes|no|nothing)\\b"
+      "match": "\\b(true|false|nothing)\\b"
     },
     {
       "name": "constant.numeric.echo",
       "match": "\\b\\d+(\\.\\d+)?([eE][+-]?\\d+)?\\b"
     },
     {
-      "name": "support.function.bio.echo",
-      "match": "\\b(dna|gc|at|gc_count|base_counts|complement|reverse_complement|revcomp|transcribe|back_transcribe|translate|find_orfs|find_motif|tm|tm_basic|primer_check|primer_info|design_primers|pcr_program|restriction_sites|digest|enzymes|align|protein_mass|isoelectric_point|gravy|protein_info|dna_mass|parse_fasta|read_fasta|to_fasta|write_fasta|gel|dilute|copy_number|molarity|mutate|hamming|codon_usage|codon_table|random_dna)\\b(?=\\s*\\()"
+      "name": "entity.name.namespace.echo",
+      "match": "\\b(bio|math|random|file|json|time|gates|cyber|stats|ml|ai)\\b(?=\\.)"
     },
     {
       "name": "support.function.echo",
@@ -93,7 +83,7 @@
     },
     {
       "name": "keyword.operator.echo",
-      "match": "->|==|!=|<=|>=|\\+=|-=|\\*=|/=|//|[+\\-*/%^<>=]"
+      "match": "->|==|!=|<=|>=|//|[+\\-*/%^<>]"
     }
   ],
   "repository": {

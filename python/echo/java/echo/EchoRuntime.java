@@ -38,8 +38,12 @@ public final class EchoRuntime {
 
     public static EchoFn named(String name, EchoFn f) { return new NamedFn(name, f); }
 
+    /** An Echo error. `code` is the Echo error code (E101-E502); run `echolang explain CODE` to read about it. */
     public static class EchoError extends RuntimeException {
-        public EchoError(String m) { super(m); }
+        public final String code;
+        public EchoError(String m) { this("E404", m); }
+        public EchoError(String code, String m) { super(m); this.code = code; }
+        @Override public String toString() { return "Error " + code + ": " + getMessage(); }
     }
 
     /** A named value passed to a built-in, like translate(seq, to_stop: true). */
@@ -143,7 +147,7 @@ public final class EchoRuntime {
 
     public static String type(Object v) {
         if (v == null) return "nothing";
-        if (v instanceof Boolean) return "yes/no";
+        if (v instanceof Boolean) return "boolean";
         if (v instanceof Number) return "number";
         if (v instanceof String) return "text";
         if (v instanceof List) return "list";
@@ -248,7 +252,7 @@ public final class EchoRuntime {
 
     public static Object div(Object a, Object b) {
         needNums("/", a, b);
-        if (toDouble(b) == 0) throw new EchoError("Can't divide by zero.");
+        if (toDouble(b) == 0) throw new EchoError("E401", "Division by zero.");
         if (isInt(a) && isInt(b) && ((Number) a).longValue() % ((Number) b).longValue() == 0)
             return ((Number) a).longValue() / ((Number) b).longValue();
         return toDouble(a) / toDouble(b);
@@ -256,14 +260,14 @@ public final class EchoRuntime {
 
     public static Object floordiv(Object a, Object b) {
         needNums("//", a, b);
-        if (toDouble(b) == 0) throw new EchoError("Can't divide by zero.");
+        if (toDouble(b) == 0) throw new EchoError("E401", "Division by zero.");
         if (isInt(a) && isInt(b)) return Math.floorDiv(((Number) a).longValue(), ((Number) b).longValue());
         return Math.floor(toDouble(a) / toDouble(b));
     }
 
     public static Object mod(Object a, Object b) {
         needNums("%", a, b);
-        if (toDouble(b) == 0) throw new EchoError("Can't divide by zero.");
+        if (toDouble(b) == 0) throw new EchoError("E401", "Division by zero.");
         if (isInt(a) && isInt(b)) return Math.floorMod(((Number) a).longValue(), ((Number) b).longValue());
         double x = toDouble(a), y = toDouble(b);
         return x - y * Math.floor(x / y);
@@ -308,13 +312,11 @@ public final class EchoRuntime {
     public static boolean in(Object a, Object b) {
         if (b instanceof String) {
             if (!(a instanceof String)) throw new EchoError("To look inside text, the left side must be text.");
-            String x = (String) a, y = (String) b;
-            if (isSeq(x) && isSeq(y)) return y.toUpperCase().contains(x.toUpperCase());
-            return y.contains(x);
+            return ((String) b).contains((String) a);
         }
         if (b instanceof List) { for (Object o : (List<?>) b) if (eq(o, a)) return true; return false; }
-        if (b instanceof Map) return ((Map<?, ?>) b).containsKey(a);
-        throw new EchoError("Can't look inside " + type(b) + ".");
+        if (b instanceof Map) return ((Map<?, ?>) b).containsKey(a) && !"_type".equals(a);
+        throw new EchoError("E301", "Can't look inside " + type(b) + ".");
     }
 
     static boolean isSeq(String s) { return !s.isEmpty() && s.matches("[ACGTUNacgtun]+"); }
@@ -323,13 +325,98 @@ public final class EchoRuntime {
 
     static Object gateResult(Object a, Object b, boolean r) { return bit(a) && bit(b) ? (Object) (r ? 1L : 0L) : (Object) r; }
 
-    public static Object and(Object a, Object b) { return gateResult(a, b, truthy(a) && truthy(b)); }
-    public static Object or(Object a, Object b) { return gateResult(a, b, truthy(a) || truthy(b)); }
-    public static Object xor(Object a, Object b) { return gateResult(a, b, truthy(a) != truthy(b)); }
-    public static Object nand(Object a, Object b) { return gateResult(a, b, !(truthy(a) && truthy(b))); }
-    public static Object nor(Object a, Object b) { return gateResult(a, b, !(truthy(a) || truthy(b))); }
-    public static Object xnor(Object a, Object b) { return gateResult(a, b, truthy(a) == truthy(b)); }
-    public static Object not(Object a) { return bit(a) ? (Object) (1L - ((Number) a).longValue()) : (Object) !truthy(a); }
+    /** Gates need both sides true/false, or both bits (0 or 1). */
+    static void gateArgs(String op, Object a, Object b) {
+        if ((a instanceof Boolean && b instanceof Boolean) || (bit(a) && bit(b))) return;
+        Object bad = (a instanceof Boolean || bit(a)) ? b : a;
+        if (!(a instanceof Boolean || bit(a)) || !(b instanceof Boolean || bit(b)))
+            throw new EchoError("E301", "'" + op + "' needs true/false or bits (0 or 1), not " + describe(bad) + ".");
+        throw new EchoError("E301", "'" + op + "' needs both sides to be true/false, or both to be bits (0 or 1); got "
+                + describe(a) + " and " + describe(b) + ".");
+    }
+    static boolean on(Object v) { return v instanceof Boolean ? (Boolean) v : ((Number) v).longValue() == 1; }
+
+    public static Object and(Object a, Object b) { gateArgs("and", a, b); return gateResult(a, b, on(a) && on(b)); }
+    public static Object or(Object a, Object b) { gateArgs("or", a, b); return gateResult(a, b, on(a) || on(b)); }
+    public static Object xor(Object a, Object b) { gateArgs("xor", a, b); return gateResult(a, b, on(a) != on(b)); }
+    public static Object nand(Object a, Object b) { gateArgs("nand", a, b); return gateResult(a, b, !(on(a) && on(b))); }
+    public static Object nor(Object a, Object b) { gateArgs("nor", a, b); return gateResult(a, b, !(on(a) || on(b))); }
+    public static Object xnor(Object a, Object b) { gateArgs("xnor", a, b); return gateResult(a, b, on(a) == on(b)); }
+    public static Object not(Object a) {
+        if (a instanceof Boolean) return !(Boolean) a;
+        if (bit(a)) return 1L - ((Number) a).longValue();
+        throw new EchoError("E301", "'not' needs true/false or a bit (0 or 1), not " + describe(a) + ".");
+    }
+
+    /** if / else if / while: the condition must be a real boolean. */
+    public static boolean cond(Object v, String word) {
+        if (v instanceof Boolean) return (Boolean) v;
+        throw new EchoError("E303", "The " + word + " condition must be true or false, not " + describe(v) + ".");
+    }
+
+    /** 'text "ATGX"', 'number 5', 'list' ... used in error messages. */
+    public static String describe(Object v) {
+        String t = type(v);
+        if (v instanceof String || isNum(v)) {
+            String s = show(v, true);
+            if (s.length() > 24) s = s.substring(0, 21) + "...\"";
+            return t + " " + s;
+        }
+        return t;
+    }
+
+    // ------------------------------------------------------------------ types
+    private static final Map<String, String[][]> RECORDS = new HashMap<>();
+
+    /** Checks a value against an Echo type such as "number", "list of dna" or "text or nothing". */
+    public static Object typed(Object v, String spec, String what) {
+        if (!matches(v, spec)) throw new EchoError("E302", what + " must be " + spec + ", but got " + describe(v) + ".");
+        return v;
+    }
+
+    public static boolean matches(Object v, String spec) {
+        if (spec == null) return true;
+        if (spec.endsWith(" or nothing")) {
+            if (v == null) return true;
+            spec = spec.substring(0, spec.length() - " or nothing".length());
+        }
+        String of = null;
+        int k = spec.indexOf(" of ");
+        if (k > 0) { of = spec.substring(k + 4); spec = spec.substring(0, k); }
+        switch (spec) {
+            case "any": return true;
+            case "nothing": return v == null;
+            case "number": return isNum(v);
+            case "integer": return isInt(v) || (v instanceof Double && (Double) v == Math.rint((Double) v));
+            case "boolean": return v instanceof Boolean;
+            case "text": return v instanceof String;
+            case "dna": return v instanceof String && ((String) v).matches("[ACGTNacgtn]*");
+            case "rna": return v instanceof String && ((String) v).matches("[ACGUNacgun]*");
+            case "protein": return v instanceof String && ((String) v).matches("[ACDEFGHIKLMNPQRSTVWYXBZUOacdefghiklmnpqrstvwyxbzuo*]*");
+            case "function": return v instanceof EchoFn;
+            case "list":
+                if (!(v instanceof List)) return false;
+                if (of != null) for (Object o : (List<?>) v) if (!matches(o, of)) return false;
+                return true;
+            case "map":
+                if (!(v instanceof Map) || ((Map<?, ?>) v).containsKey("_type")) return false;
+                if (of != null) for (Object o : ((Map<?, ?>) v).values()) if (!matches(o, of)) return false;
+                return true;
+            default:
+                return v instanceof Map && spec.equals(((Map<?, ?>) v).get("_type"));
+        }
+    }
+
+    /** What `catch problem` receives: Error(code, message, line). */
+    public static Object errorRecord(Throwable e) {
+        LinkedHashMap<Object, Object> m = new LinkedHashMap<>();
+        m.put("_type", "Error");
+        m.put("code", e instanceof EchoError ? ((EchoError) e).code
+                : e instanceof ArithmeticException ? "E401" : e instanceof StackOverflowError ? "E405" : "E404");
+        m.put("message", message(e));
+        m.put("line", null);
+        return m;
+    }
 
     // ------------------------------------------------------------------ items, fields, calls
     static int position(Object list, int size, Object key) {
@@ -380,16 +467,22 @@ public final class EchoRuntime {
     }
 
     public static Object attr(Object obj, String name) {
-        if (obj instanceof Map && ((Map<?, ?>) obj).containsKey(name)) return ((Map<?, ?>) obj).get(name);
-        final EchoFn f = fn(name);
-        if (f != null) return (EchoFn) a -> { Object[] all = new Object[a.length + 1]; all[0] = obj;
-            System.arraycopy(a, 0, all, 1, a.length); return f.call(all); };
-        throw new EchoError("No field '" + name + "'.");
+        if (obj instanceof Map && ((Map<?, ?>) obj).containsKey(name) && !"_type".equals(name))
+            return ((Map<?, ?>) obj).get(name);
+        throw new EchoError("E202", (obj instanceof Map && ((Map<?, ?>) obj).get("_type") != null
+                ? ((Map<?, ?>) obj).get("_type") : type(obj)) + " has no field '" + name + "'.");
     }
 
     @SuppressWarnings("unchecked")
     public static void setAttr(Object obj, String name, Object value) {
-        if (!(obj instanceof Map)) throw new EchoError("Only maps and records have fields you can set.");
+        if (!(obj instanceof Map)) throw new EchoError("E301", "Only maps and records have fields you can set, not " + type(obj) + ".");
+        Object t = ((Map<?, ?>) obj).get("_type");
+        String[][] rec = t == null ? null : RECORDS.get(t);
+        if (rec != null) {
+            int i = Arrays.asList(rec[0]).indexOf(name);
+            if (i < 0) throw new EchoError("E202", "Record " + t + " has no field '" + name + "'.");
+            if (rec[1][i] != null) typed(value, rec[1][i], "Field " + t + "." + name);
+        }
         ((Map<Object, Object>) obj).put(name, value);
     }
 
@@ -422,14 +515,30 @@ public final class EchoRuntime {
         });
     }
 
-    public static EchoFn record(final String name, final String[] fields, final Object[] defaults) {
-        return a -> {
+    public static EchoFn record(final String name, final String[] fields, final Object[] defaults, final String[] types) {
+        RECORDS.put(name, new String[][]{fields, types});
+        return named(name, a -> {
+            int positional = 0;
+            for (Object o : a) if (!(o instanceof Kw)) positional++;
+            if (positional > fields.length)
+                throw new EchoError("E203", name + "() takes " + fields.length + " value" + (fields.length == 1 ? "" : "s") + " but got " + positional + ".");
             LinkedHashMap<Object, Object> m = new LinkedHashMap<>();
             m.put("_type", name);
-            for (int i = 0; i < fields.length; i++) m.put(fields[i], arg(a, i, fields[i], defaults[i]));
+            for (int i = 0; i < fields.length; i++) {
+                Object v = arg(a, i, fields[i], MISSING);
+                if (v == MISSING) {
+                    if (defaults[i] == MISSING) throw new EchoError("E205", name + "() is missing the value for '" + fields[i] + "'.");
+                    v = defaults[i];
+                }
+                if (types[i] != null) typed(v, types[i], "Field " + name + "." + fields[i]);
+                m.put(fields[i], v);
+            }
             return m;
-        };
+        });
     }
+
+    /** Marks a record field without a default. */
+    public static final Object NO_DEFAULT = MISSING;
 
     /** Gives a fn(...) -> ... the values it uses from the surrounding function. */
     public static EchoFn capture(Object[] values, java.util.function.Function<Object[], EchoFn> make) {
@@ -438,7 +547,7 @@ public final class EchoRuntime {
 
     public static Object addTo(Object target, Object value) {
         if (target instanceof List) { @SuppressWarnings("unchecked") List<Object> l = (List<Object>) target; l.add(value); return l; }
-        return add(target, value);
+        throw new EchoError("E301", "'add ... to' needs a list, not " + type(target) + ".");
     }
 
     public static Iterable<Object> iter(Object v) {
@@ -475,7 +584,7 @@ public final class EchoRuntime {
 
     public static String message(Throwable e) {
         if (e instanceof EchoError) return e.getMessage();
-        if (e instanceof ArithmeticException) return "Can't divide by zero.";
+        if (e instanceof ArithmeticException) return "Division by zero.";
         if (e instanceof StackOverflowError) return "Too much recursion.";
         return String.valueOf(e.getMessage());
     }
@@ -1613,7 +1722,7 @@ public final class EchoRuntime {
 
     public static Object ai(Object... a) {
         String prompt = show(arg(a, 0));
-        if (aiKey == null || aiKey.isEmpty()) throw new EchoError("No AI key set. Set EchoRuntime.aiKey (or ECHO_AI_KEY).");
+        if (aiKey == null || aiKey.isEmpty()) throw new EchoError("E502", "No AI key set. Set EchoRuntime.aiKey (or ECHO_AI_KEY).");
         String p = aiProvider == null ? "claude" : aiProvider.toLowerCase();
         try {
             if (p.equals("claude") || p.equals("anthropic")) {

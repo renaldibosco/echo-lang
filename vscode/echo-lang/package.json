@@ -1,23 +1,42 @@
 {
   "name": "echo-lang",
   "displayName": "Echo Language",
-  "description": "Syntax highlighting and snippets for Echo (.echo), the English-like bio programming language",
-  "version": "1.0.0",
+  "description": "Syntax highlighting and snippets for Echo 2 (.echo), the English-like programming language for biology",
+  "version": "2.0.0",
   "publisher": "renaldibosco",
-  "engines": { "vscode": "^1.60.0" },
-  "categories": ["Programming Languages", "Snippets"],
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets"
+  ],
   "contributes": {
-    "languages": [{
-      "id": "echo",
-      "aliases": ["Echo", "echo"],
-      "extensions": [".echo"],
-      "configuration": "./language-configuration.json"
-    }],
-    "grammars": [{
-      "language": "echo",
-      "scopeName": "source.echo",
-      "path": "./syntaxes/echo.tmLanguage.json"
-    }],
-    "snippets": [{ "language": "echo", "path": "./snippets.json" }]
+    "languages": [
+      {
+        "id": "echo",
+        "aliases": [
+          "Echo",
+          "echo"
+        ],
+        "extensions": [
+          ".echo"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "echo",
+        "scopeName": "source.echo",
+        "path": "./syntaxes/echo.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "echo",
+        "path": "./snippets.json"
+      }
+    ]
   }
 }

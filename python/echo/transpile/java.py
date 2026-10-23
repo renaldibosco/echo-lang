@@ -1,7 +1,8 @@
 """Echo -> Java converter. The output uses echo.EchoRuntime (copy it with: echolang java --runtime DIR)."""
 from ..errors import EchoSyntaxError
 from ..parser import parse
-from ..stdlib import load
+from ..modules import GLOBALS, INTERNAL, MODULES, build
+from ..values import Builtin
 
 JAVA_RESERVED = {
     "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char", "class", "const", "continue",
@@ -13,6 +14,10 @@ JAVA_RESERVED = {
 }
 RUNTIME_NAME_FIX = {"int": "int_"}
 CONSTANTS = {"pi", "e", "start_codon", "stop_codons"}
+
+
+def type_text(spec):
+    return None if spec is None else str(spec)
 
 
 def jname(n):
@@ -115,7 +120,8 @@ class JavaGen:
         self.functions = {}     # name -> Define node
         self.globals = []
         self.ctx = None         # current function context
-        self.builtins = load()
+        build()
+        self.records = set()
 
     def emit(self, text):
         self.out.append("    " * self.level + text)
@@ -135,6 +141,7 @@ class JavaGen:
             else:
                 top.append(st)
         self.check_nested(tree.body)
+        self.records = {st.name for st in tree.body if st.kind == "Record"}
         self.globals = [n for n in assigned_names(top) if n not in self.functions]
         for f in self.functions.values():
             g = set()
@@ -171,7 +178,8 @@ class JavaGen:
         self.emit("")
         self.emit("/** The program itself. Android apps can call " + self.cls + ".run() on a background thread. */")
         self.emit("public static void run() {")
-        self.ctx = {"locals": set(), "lambda": None, "global_decl": set()}
+        self.ctx = {"locals": set(), "lambda": None, "global_decl": set(), "types": declared_types(top),
+                    "returns": None, "name": None}
         self.body(top)
         self.ctx = None
         self.emit("}")
@@ -193,18 +201,28 @@ class JavaGen:
                     self.check_nested(b, depth + 1)
 
     def function(self, f):
-        params = [p for p, _ in f.params]
+        params = [p for p, _, _ in f.params]
         g = set()
         locs = [n for n in assigned_names(f.body, [], g) if n not in params and n not in g]
         self.emit("static Object %s(%s) {" % (jname(f.name), ", ".join("Object " + jname(p) for p in params)))
         self.level += 1
         if locs:
             self.emit("Object " + ", ".join("%s = null" % jname(n) for n in locs) + ";")
-        self.ctx = {"locals": set(params) | set(locs), "lambda": None, "global_decl": g}
+        types = declared_types(f.body)
+        types.update({p: t for p, _, t in f.params if t is not None})
+        self.ctx = {"locals": set(params) | set(locs), "lambda": None, "global_decl": g, "types": types,
+                    "returns": f.returns, "name": f.name}
+        for p, _, t in f.params:
+            if t is not None:
+                self.emit("typed(%s, %s, %s);" % (jname(p), jstring(str(t)),
+                                                  jstring("Parameter '%s' of %s()" % (p, f.name))))
         self.emit("if (true) {")
         self.body(f.body, indent=True)
         self.emit("}")
-        self.emit("return null;")
+        if f.returns is not None:
+            self.emit("return typed(null, %s, %s);" % (jstring(str(f.returns)), jstring("The result of %s()" % f.name)))
+        else:
+            self.emit("return null;")
         self.ctx = None
         self.level -= 1
         self.emit("}")
@@ -237,34 +255,28 @@ class JavaGen:
 
     def st_Set(self, st):
         value = self.expr(st.value)
-        if st.op != "=":
-            fn = {"+=": "add", "-=": "sub", "*=": "mul", "/=": "div"}[st.op]
-            value = "%s(%s, %s)" % (fn, self.expr(st.target), value)
+        if st.target.kind == "Name":
+            spec = st.type or (self.ctx or {}).get("types", {}).get(st.target.name)
+            if spec is not None:
+                value = "typed(%s, %s, %s)" % (value, jstring(str(spec)), jstring("Variable '%s'" % st.target.name))
         self.emit(self.store(st.target, value))
 
     def st_Add(self, st):
-        self.emit(self.store(st.target, "addTo(%s, %s)" % (self.expr(st.target), self.expr(st.value))))
+        self.emit("addTo(%s, %s);" % (self.expr(st.target), self.expr(st.value)))
 
     def st_Ask(self, st):
-        if st.ai:
-            call = "ai(show(%s))" % self.expr(st.prompt)
-            if st.name:
-                self.emit("%s = %s;" % (self.var(st.name, st.line, True), call))
-            else:
-                self.emit("say(%s);" % call)
-        else:
-            self.emit("%s = ask(%s);" % (self.var(st.name, st.line, True), self.expr(st.prompt)))
+        self.emit("%s = ask(%s);" % (self.var(st.name, st.line, True), self.expr(st.prompt)))
 
-    def cond(self, e):
+    def cond(self, e, word="if"):
         if e.kind == "Compare":
             return self.compare(e)
         if e.kind == "Bool":
             return "true" if e.value else "false"
-        return "truthy(%s)" % self.expr(e)
+        return "cond(%s, %s)" % (self.expr(e), jstring(word))
 
     def st_If(self, st):
         for i, (c, b) in enumerate(st.branches):
-            self.emit("%sif (%s) {" % ("" if i == 0 else "} else ", self.cond(c)))
+            self.emit("%sif (%s) {" % ("" if i == 0 else "} else ", self.cond(c, "if" if i == 0 else "else if")))
             self.body(b)
         if st.else_body is not None:
             self.emit("} else {")
@@ -278,7 +290,7 @@ class JavaGen:
         self.emit("}")
 
     def st_While(self, st):
-        c = "truthy(%s)" % self.expr(st.cond) if st.cond.kind == "Bool" else self.cond(st.cond)
+        c = "cond(%s, \"while\")" % self.expr(st.cond) if st.cond.kind == "Bool" else self.cond(st.cond, "while")
         self.emit("while (%s) {" % c)
         self.body(st.body)
         self.emit("}")
@@ -316,7 +328,11 @@ class JavaGen:
         self.emit("if (true) continue;")
 
     def st_Return(self, st):
-        self.emit("if (true) return %s;" % (self.expr(st.value) if st.value is not None else "null"))
+        value = self.expr(st.value) if st.value is not None else "null"
+        ret = self.ctx.get("returns") if self.ctx else None
+        if ret is not None and (self.ctx.get("lambda") is None):
+            value = "typed(%s, %s, %s)" % (value, jstring(str(ret)), jstring("The result of %s()" % self.ctx["name"]))
+        self.emit("if (true) return %s;" % value)
 
     def st_Define(self, st):
         raise EchoSyntaxError("Java: put 'define %s' at the top level." % st.name, st.line)
@@ -328,21 +344,25 @@ class JavaGen:
         self.emit("} catch (RuntimeException | StackOverflowError %s) {" % err)
         self.level += 1
         if st.err:
-            self.emit("%s = message(%s);" % (self.var(st.err, st.line, True), err))
+            self.emit("%s = errorRecord(%s);" % (self.var(st.err, st.line, True), err))
         self.level -= 1
         self.body(st.handler)
         self.emit("}")
 
     def st_Fail(self, st):
-        self.emit("if (true) throw new EchoError(show(%s));" % self.expr(st.value))
+        self.emit("if (true) throw new EchoError(\"E407\", show(%s));" % self.expr(st.value))
 
     def st_Use(self, st):
-        self.emit("// use %s  (convert that file too and call its run())" % st.path)
+        raise EchoSyntaxError("Java: 'use' is not supported by the Java converter yet.", st.line,
+                              "Put the functions in the same file before converting.")
 
     def st_Record(self, st):
-        fields = "new String[]{%s}" % ", ".join(jstring(f) for f, _ in st.fields)
-        defaults = "new Object[]{%s}" % ", ".join(self.expr(d) if d is not None else "null" for _, d in st.fields)
-        self.emit("%s = record(%s, %s, %s);" % (self.var(st.name, st.line, True), jstring(st.name), fields, defaults))
+        fields = "new String[]{%s}" % ", ".join(jstring(f) for f, _, _ in st.fields)
+        defaults = "new Object[]{%s}" % ", ".join(self.expr(d) if d is not None else "NO_DEFAULT"
+                                                  for _, d, _ in st.fields)
+        types = "new String[]{%s}" % ", ".join(jstring(str(t)) if t is not None else "null" for _, _, t in st.fields)
+        self.emit("%s = record(%s, %s, %s, %s);" % (self.var(st.name, st.line, True), jstring(st.name), fields,
+                                                    defaults, types))
 
     def st_Global(self, st):
         pass
@@ -369,11 +389,33 @@ class JavaGen:
             a = self.new_tmp("_f")
             args = ", ".join("arg(%s, %d)" % (a, i) for i in range(len(f.params)))
             return "named(%s, %s -> %s.%s(%s))" % (jstring(n), a, self.cls, jname(n), args)
-        if n in CONSTANTS:
-            return n
-        if n in self.builtins:
-            return "fn(%s)" % jstring(n)
-        raise EchoSyntaxError("I don't know '%s'." % n, line, "Set it first: set %s to ..." % n)
+        if n in GLOBALS:
+            return self.builtin_value(n, line)
+        if n in MODULES:
+            raise EchoSyntaxError("Java: a module can't be used as a value; use its members, e.g. %s.something."
+                                  % n, line)
+        raise EchoSyntaxError("Unknown name '%s'." % n, line, "Set it first: set %s to ..." % n, code="E201")
+
+    def builtin_value(self, qual, line):
+        internal = INTERNAL.get(qual, qual)
+        if internal in CONSTANTS:
+            return internal
+        self.require_runtime(internal, qual, line)
+        return "fn(%s)" % jstring(internal)
+
+    def require_runtime(self, internal, qual, line):
+        if internal not in RUNTIME_SUPPORTED:
+            raise EchoSyntaxError("Java: %s is only available in the Echo interpreter." % qual, line,
+                                  "Supported in Java: core, bio, gates, cyber, stats, ml and ai.ask().")
+
+    def module_member(self, e):
+        """'bio.gc' for an Attr node that names a module member, else None."""
+        if e.kind == "Attr" and e.obj.kind == "Name" and e.obj.name in MODULES and not self.is_variable(e.obj.name):
+            mod = MODULES[e.obj.name]
+            if e.name not in mod.members:
+                raise EchoSyntaxError("Module %s has no '%s'." % (mod.name, e.name), e.line, code="E202")
+            return "%s.%s" % (mod.name, e.name)
+        return None
 
     # ---- expressions ----
     def expr(self, e):
@@ -399,15 +441,15 @@ class JavaGen:
         return "list(%s)" % ", ".join(self.expr(x) for x in e.items)
 
     def ex_Map(self, e):
-        return "map(%s)" % ", ".join("%s, %s" % (self.expr(k), self.expr(v)) for k, v in e.pairs)
+        return "mapOf(%s)" % ", ".join("%s, %s" % (self.expr(k), self.expr(v)) for k, v in e.pairs)
 
     def ex_Name(self, e):
         return self.var(e.name, e.line)
 
     def ex_Lambda(self, e):
-        outer = self.ctx or {"locals": set(), "lambda": None, "global_decl": set()}
+        outer = self.ctx or {"locals": set(), "lambda": None, "global_decl": set(), "types": {}}
         lid = self.new_tmp("")
-        params = {p: "p%s_%s" % (lid, p) for p, _ in e.params}
+        params = {p: "p%s_%s" % (lid, p) for p, _, _ in e.params}
         free = free_names(e.body, set()) - set(params)
         outer_lam = outer["lambda"]
         captured, cap_exprs = {}, []
@@ -419,10 +461,13 @@ class JavaGen:
                 cap_exprs.append(self.var(n, e.line))
         lam = {"params": params, "captured": captured, "c": "_c" + lid, "a": "_a" + lid}
         saved = self.ctx
-        self.ctx = {"locals": outer["locals"], "lambda": lam, "global_decl": outer["global_decl"]}
+        self.ctx = {"locals": outer["locals"], "lambda": lam, "global_decl": outer["global_decl"], "types": {},
+                    "returns": None, "name": "fn"}
         body = self.expr(e.body)
         self.ctx = saved
         unpack = "".join("Object %s = arg(%s, %d); " % (v, lam["a"], i) for i, v in enumerate(params.values()))
+        unpack += "".join("typed(%s, %s, %s); " % (params[p], jstring(str(t)), jstring("Parameter '%s' of fn" % p))
+                          for p, _, t in e.params if t is not None)
         fn_text = "(EchoFn) %s -> { %sreturn %s; }" % (lam["a"], unpack, body)
         if cap_exprs:
             return "capture(new Object[]{%s}, %s -> %s)" % (", ".join(cap_exprs), lam["c"], fn_text)
@@ -462,16 +507,30 @@ class JavaGen:
                                      self.expr(e.stop) if e.stop else "null")
 
     def ex_Attr(self, e):
+        qual = self.module_member(e)
+        if qual:
+            return self.builtin_value(qual, e.line)
         return "attr(%s, %s)" % (self.expr(e.obj), jstring(e.name))
 
     def ex_Call(self, e):
         f = e.func
         args = [self.expr(a) for a in e.args]
+        qual = self.module_member(f) if f.kind == "Attr" else None
+        if qual or (f.kind == "Name" and not self.is_variable(f.name) and f.name not in self.functions
+                    and f.name in GLOBALS):
+            qual = qual or f.name
+            internal = INTERNAL.get(qual, qual)
+            if not isinstance(GLOBALS.get(qual) if "." not in qual else
+                              MODULES[qual.split(".")[0]].members.get(qual.split(".", 1)[1]), Builtin):
+                raise EchoSyntaxError("%s is not a function." % qual, e.line, code="E206")
+            self.require_runtime(internal, qual, e.line)
+            kws = ["kw(%s, %s)" % (jstring(k), self.expr(v)) for k, v in e.kwargs]
+            return "%s(%s)" % (RUNTIME_NAME_FIX.get(internal, internal), ", ".join(args + kws))
         if f.kind == "Name" and not self.is_variable(f.name):
             n = f.name
             if n in self.functions:
                 d = self.functions[n]
-                pnames = [p for p, _ in d.params]
+                pnames = [p for p, _, _ in d.params]
                 if len(args) > len(pnames):
                     raise EchoSyntaxError("%s() takes %d values but got %d." % (n, len(pnames), len(args)), e.line)
                 kw = dict(e.kwargs)
@@ -479,7 +538,7 @@ class JavaGen:
                     if k not in pnames:
                         raise EchoSyntaxError("%s() has no setting called '%s'." % (n, k), e.line)
                 full = list(args)
-                for p, default in d.params[len(args):]:
+                for p, default, _ in d.params[len(args):]:
                     if p in kw:
                         full.append(self.expr(kw[p]))
                     elif default is not None:
@@ -488,12 +547,6 @@ class JavaGen:
                         raise EchoSyntaxError("%s() is missing the value for '%s'." % (n, p), e.line)
                 prefix = (self.cls + ".") if self.ctx and self.ctx["lambda"] is not None else ""
                 return "%s%s(%s)" % (prefix, jname(n), ", ".join(full))
-            if n in self.builtins:
-                if n == "ai_setup" or n not in RUNTIME_SUPPORTED:
-                    raise EchoSyntaxError("Java: the built-in %s() is only available in the Echo interpreter." % n,
-                                          e.line, "Supported in Java: core, bio, gates, cyber, statistics, ai().")
-                kws = ["kw(%s, %s)" % (jstring(k), self.expr(v)) for k, v in e.kwargs]
-                return "%s(%s)" % (RUNTIME_NAME_FIX.get(n, n), ", ".join(args + kws))
         kws = ["kw(%s, %s)" % (jstring(k), self.expr(v)) for k, v in e.kwargs]
         return "call(%s)" % ", ".join([self.expr(f)] + args + kws)
 
@@ -527,6 +580,22 @@ RUNTIME_SUPPORTED = {
     "train", "probability", "accuracy", "cluster", "gel",
     "ai",
 }
+
+
+def declared_types(body, out=None):
+    """name -> TypeSpec for every `set name: type to ...` in a block (not inside nested functions)."""
+    out = {} if out is None else out
+    for st in body:
+        if st.kind == "Set" and st.type is not None and st.target.kind == "Name":
+            out[st.target.name] = st.type
+        for attr in ("body", "else_body", "handler"):
+            sub = getattr(st, attr, None)
+            if isinstance(sub, list) and st.kind != "Define":
+                declared_types(sub, out)
+        if st.kind == "If":
+            for _, b in st.branches:
+                declared_types(b, out)
+    return out
 
 
 def to_java(source, class_name="Program"):

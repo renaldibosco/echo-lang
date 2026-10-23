@@ -1,6 +1,6 @@
 """AI helpers. Uses YOUR key, stored only on your own device. Nothing is sent until an ai...() function runs.
 
-Setup once:   ai_setup("claude", "YOUR-KEY")      (or "gemini", "openai")
+Setup once:   ai.setup("claude", "YOUR-KEY")      (or "gemini", "openai")
 Or set environment variables ECHO_AI_PROVIDER, ECHO_AI_KEY, ECHO_AI_MODEL, ECHO_AI_URL.
 """
 import json
@@ -9,6 +9,11 @@ import urllib.error
 import urllib.request
 
 from ..errors import EchoRuntimeError
+
+
+class AIError(EchoRuntimeError):
+    default_code = "E502"
+
 from ..values import show
 from . import builtin
 
@@ -43,7 +48,7 @@ def _config():
 def _ai_setup(provider, key, model=None, url=None):
     provider = ALIASES.get(show(provider).lower(), show(provider).lower())
     if provider not in DEFAULT_MODELS:
-        raise EchoRuntimeError("Unknown AI provider '%s'." % provider, hint="Use 'claude', 'gemini' or 'openai'.")
+        raise AIError("Unknown AI provider '%s'." % provider, hint="Use 'claude', 'gemini' or 'openai'.")
     cfg = {"provider": provider, "key": show(key)}
     if model:
         cfg["model"] = show(model)
@@ -64,7 +69,7 @@ def _ai_setup(provider, key, model=None, url=None):
 def _ai_status():
     cfg = _config()
     if not cfg.get("key"):
-        return "No AI key set. Run: ai_setup(\"claude\", \"YOUR-KEY\")"
+        return "No AI key set. Run: ai.setup(\"claude\", \"YOUR-KEY\")"
     p = cfg.get("provider", "claude")
     return "AI: %s, model %s" % (p, cfg.get("model", DEFAULT_MODELS.get(p, "?")))
 
@@ -77,17 +82,17 @@ def _post(url, headers, body):
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:300]
         if e.code in (401, 403):
-            raise EchoRuntimeError("The AI service rejected the key (%d)." % e.code, hint="Check it with ai_setup().")
-        raise EchoRuntimeError("AI service error %d: %s" % (e.code, detail))
+            raise AIError("The AI service rejected the key (%d)." % e.code, hint="Set it again with ai.setup().")
+        raise AIError("AI service error %d: %s" % (e.code, detail))
     except urllib.error.URLError as e:
-        raise EchoRuntimeError("Can't reach the AI service (%s). Are you online?" % e.reason)
+        raise AIError("Can't reach the AI service (%s). Are you online?" % e.reason)
 
 
 def ask_ai(prompt, system=None):
     cfg = _config()
     key = cfg.get("key")
     if not key:
-        raise EchoRuntimeError("No AI key set.", hint='Run once: ai_setup("claude", "YOUR-KEY")  (or gemini / openai)')
+        raise AIError("No AI key set.", hint='Run once: ai.setup("claude", "YOUR-KEY")  (or gemini / openai)')
     provider = cfg.get("provider", "claude")
     model = cfg.get("model") or DEFAULT_MODELS.get(provider)
     prompt = show(prompt)
@@ -107,7 +112,7 @@ def ask_ai(prompt, system=None):
         try:
             return "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"]).strip()
         except (KeyError, IndexError):
-            raise EchoRuntimeError("The AI gave no answer.")
+            raise AIError("The AI gave no answer.")
     if provider == "openai":
         msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
         data = _post(cfg.get("url") or "https://api.openai.com/v1/chat/completions",
@@ -116,23 +121,26 @@ def ask_ai(prompt, system=None):
         try:
             return data["choices"][0]["message"]["content"].strip()
         except (KeyError, IndexError):
-            raise EchoRuntimeError("The AI gave no answer.")
-    raise EchoRuntimeError("Unknown AI provider '%s'." % provider)
+            raise AIError("The AI gave no answer.")
+    raise AIError("Unknown AI provider '%s'." % provider)
 
 
-ECHO_GUIDE = """You write code in Echo, a simple English-like programming language for biology.
-Rules: one statement per line; blocks close with `end`. Comments start with #.
-set x to 5 | x = 5 | x += 1 | say "GC is {gc(seq)}%" | ask "Name?" into name
-if a > 1 then ... else if ... else ... end | repeat 3 times ... end | while c ... end
-for each item in list ... end | for i from 1 to 10 step 2 ... end | break | continue
-define name(a, b = 2) ... return a + b end | fn(x) -> x * 2 | try ... catch err ... end | fail "msg"
-record Gene(name, seq) | lists [1, 2] (index from 0) | maps {name: "gfp", length: 720} m.name
-logic: and or not xor nand nor xnor | `x in list` | text + number joins as text
-bio: dna gc at base_counts complement reverse_complement transcribe translate find_orfs find_motif
-tm primer_check primer_info design_primers pcr_program restriction_sites digest align protein_mass
-isoelectric_point gravy protein_info parse_fasta read_fasta to_fasta gel dilute copy_number
-other: length upper lower split join replace sort map filter range(1, 5)=[1..5] mean stdev
-linear_fit train predict sha256 caesar truth_table to_binary.
+ECHO_GUIDE = """You write code in Echo 2, an English-like programming language for biology.
+Rules: one statement per line; blocks close with `end`; comments start with #; text uses double quotes.
+set x to 5 | set total to total + 1 | set gc_value: number to 40 (optional types) | say "GC is {bio.gc(seq)}%"
+ask "Name?" into name | if a > 1 then ... else if b then ... else ... end (conditions must be true/false)
+repeat 3 times ... end | while count > 0 ... end | for each item in items ... end | for i from 1 to 10 step 2 ... end
+break | continue | define name(a: number, b = 2) -> number ... return a + b end | fn(x) -> x * 2
+try ... catch problem ... say problem.message end | fail "message" | record Gene(name: text, seq: dna)
+lists [1, 2] (positions from 0) | maps {name: "gfp", length: 720} m.name | add item to items | == != < > in
+logic: and or not xor nand nor xnor | there are no method calls: write upper(name), not name.upper()
+global functions: length text number integer type range sort reverse map filter reduce unique join split upper
+lower trim replace contains starts_with ends_with find format keys values has get min max sum
+modules: bio.dna bio.gc bio.at bio.base_counts bio.reverse_complement bio.transcribe bio.translate bio.find_orfs
+bio.find_motif bio.tm bio.primer_check bio.primer_info bio.design_primers bio.pcr_program bio.restriction_sites
+bio.digest bio.align bio.protein_info bio.parse_fasta bio.read_fasta bio.gel bio.dilute bio.copy_number
+math.round math.sqrt math.log random.integer random.choose stats.mean stats.stdev stats.linear_fit ml.train
+ml.predict cyber.sha256 cyber.caesar gates.truth_table gates.to_binary file.read file.write time.now ai.ask
 Reply with only Echo code, no explanation, no markdown fences."""
 
 

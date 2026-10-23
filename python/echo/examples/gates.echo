@@ -1,17 +1,19 @@
-# Logic gates and bits
+# Logic gates and bits. Gates work on true/false and on bits (0 and 1).
 say 1 and 0, 1 or 0, 1 xor 1, 1 nand 1, 0 nor 0, 1 xnor 1, not 1
+say true xor false, not true
 
-say truth_table("xor")
+say gates.truth_table("xor")
 
 # make your own gate from other gates
-define my_xor(a, b)
+define my_xor(a: integer, b: integer) -> integer
     return (a or b) and not (a and b)
 end
-say truth_table(my_xor)
+say gates.truth_table(my_xor)
 
 # adders built from gates
-say truth_table(half_adder)
-say "1011 + 0110 =", add_binary("1011", "0110"), "=", from_binary(add_binary("1011", "0110"))
+say gates.truth_table(gates.half_adder)
+set total to gates.add_binary("1011", "0110")
+say "1011 + 0110 =", total, "=", gates.from_binary(total)
 
 # bits
-say to_binary(42, 8), to_hex(255), bit_and(12, 10), bit_xor(12, 10), shift_left(1, 4)
+say gates.to_binary(42, 8), gates.to_hex(255), gates.bit_and(12, 10), gates.bit_xor(12, 10), gates.shift_left(1, 4)

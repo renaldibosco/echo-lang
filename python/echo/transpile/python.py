@@ -1,7 +1,9 @@
 """Echo -> Python converter. Output runs with `pip install` of this package (it imports echo.pyruntime)."""
 import keyword
 
+from ..modules import MODULES, build
 from ..parser import parse
+from .java import declared_types
 
 BOOLISH = {"Compare", "Bool"}
 PY_RESERVED = set(keyword.kwlist) | {"print_", "self"}
@@ -12,10 +14,13 @@ def name(n):
 
 
 class PyGen:
-    def __init__(self):
+    def __init__(self, user_names=()):
         self.lines = []
         self.level = 0
         self.tmp = 0
+        self.user_names = set(user_names)
+        self.types = [{}]        # declared variable types per function level
+        self.returns = [None]    # (TypeSpec, function name) per function level
 
     def emit(self, text):
         self.lines.append("    " * self.level + text)
@@ -42,31 +47,30 @@ class PyGen:
         self.emit("say(%s)" % ", ".join(self.expr(v) for v in st.values))
 
     def st_Set(self, st):
-        target = self.expr(st.target, store=True)
         value = self.expr(st.value)
-        if st.op == "=":
-            self.emit("%s = %s" % (target, value))
-        elif st.op == "+=":
-            self.emit("%s = add(%s, %s)" % (target, target, value))
-        elif st.op == "/=":
-            self.emit("%s = div(%s, %s)" % (target, target, value))
-        else:
-            self.emit("%s %s %s" % (target, st.op, value))
+        if st.target.kind == "Attr":
+            self.emit("set_field(%s, %r, %s)" % (self.expr(st.target.obj), st.target.name, value))
+            return
+        if st.target.kind == "Name":
+            spec = st.type or self.types[-1].get(st.target.name)
+            if spec is not None:
+                value = "typed(%s, %r, %r)" % (value, str(spec), "Variable '%s'" % st.target.name)
+        self.emit("%s = %s" % (self.expr(st.target, store=True), value))
 
     def st_Add(self, st):
-        target = self.expr(st.target, store=True)
-        self.emit("%s = add_to(%s, %s)" % (target, target, self.expr(st.value)))
+        self.emit("add_to(%s, %s)" % (self.expr(st.target), self.expr(st.value)))
 
     def st_Ask(self, st):
-        if st.ai:
-            call = "ai(show(%s))" % self.expr(st.prompt)
-            self.emit("%s = %s" % (name(st.name), call) if st.name else "say(%s)" % call)
-        else:
-            self.emit("%s = ask(%s)" % (name(st.name), self.expr(st.prompt)))
+        self.emit("%s = ask(%s)" % (name(st.name), self.expr(st.prompt)))
+
+    def cond(self, e, word):
+        if e.kind in BOOLISH:
+            return self.expr(e)
+        return "cond(%s, %r)" % (self.expr(e), word)
 
     def st_If(self, st):
         for i, (cond, body) in enumerate(st.branches):
-            self.emit("%s truthy(%s):" % ("if" if i == 0 else "elif", self.expr(cond)))
+            self.emit("%s %s:" % ("if" if i == 0 else "elif", self.cond(cond, "if" if i == 0 else "else if")))
             self.block(body)
         if st.else_body is not None:
             self.emit("else:")
@@ -77,7 +81,7 @@ class PyGen:
         self.block(st.body)
 
     def st_While(self, st):
-        self.emit("while truthy(%s):" % self.expr(st.cond))
+        self.emit("while %s:" % self.cond(st.cond, "while"))
         self.block(st.body)
 
     def st_ForEach(self, st):
@@ -102,18 +106,37 @@ class PyGen:
 
     def params(self, params):
         out = []
-        for pname, default in params:
+        for pname, default, _ in params:
             out.append(name(pname) if default is None else "%s=%s" % (name(pname), self.expr(default)))
         return ", ".join(out)
 
     def st_Define(self, st):
         self.emit("")
         self.emit("def %s(%s):" % (name(st.name), self.params(st.params)))
+        types = declared_types(st.body)
+        types.update({p: t for p, _, t in st.params if t is not None})
+        self.types.append(types)
+        self.returns.append((st.returns, st.name))
+        self.level += 1
+        for p, _, t in st.params:
+            if t is not None:
+                self.emit("typed(%s, %r, %r)" % (name(p), str(t), "Parameter '%s' of %s()" % (p, st.name)))
+        self.level -= 1
         self.block(st.body)
+        if st.returns is not None:
+            self.level += 1
+            self.emit("return typed(None, %r, %r)" % (str(st.returns), "The result of %s()" % st.name))
+            self.level -= 1
+        self.types.pop()
+        self.returns.pop()
         self.emit("")
 
     def st_Return(self, st):
-        self.emit("return" if st.value is None else "return " + self.expr(st.value))
+        value = "None" if st.value is None else self.expr(st.value)
+        spec, fname = self.returns[-1] or (None, None)
+        if spec is not None:
+            value = "typed(%s, %r, %r)" % (value, str(spec), "The result of %s()" % fname)
+        self.emit("return " + value)
 
     def st_Try(self, st):
         self.emit("try:")
@@ -121,22 +144,25 @@ class PyGen:
         self.emit("except Exception as _err:")
         self.level += 1
         if st.err:
-            self.emit("%s = message(_err)" % name(st.err))
+            self.emit("%s = error_record(_err)" % name(st.err))
         self.level -= 1
         self.block(st.handler)
 
     def st_Fail(self, st):
-        self.emit("raise EchoError(show(%s))" % self.expr(st.value))
+        self.emit("raise EchoError(show(%s), code='E407')" % self.expr(st.value))
 
     def st_Use(self, st):
-        if st.path.endswith(".echo"):
-            mod = st.path[:-5].replace("/", ".").replace("\\", ".")
-            self.emit("from %s import *  # convert %s to Python too" % (mod, st.path))
+        import os
+        path = st.path[:-5] if st.path.endswith(".echo") else st.path
+        mod = path.replace("/", ".").replace("\\", ".")
+        alias = st.alias or os.path.basename(path)
+        self.emit("import %s as %s  # convert %s to Python too" % (mod, name(alias), st.path))
 
     def st_Record(self, st):
-        fields = [f for f, _ in st.fields]
-        defaults = ", ".join("%r: %s" % (f, self.expr(d)) for f, d in st.fields if d is not None)
-        self.emit("%s = record(%r, %r, {%s})" % (name(st.name), st.name, fields, defaults))
+        fields = [f for f, _, _ in st.fields]
+        defaults = ", ".join("%r: lambda: %s" % (f, self.expr(d)) for f, d, _ in st.fields if d is not None)
+        types = ", ".join("%r: %r" % (f, str(t)) for f, _, t in st.fields if t is not None)
+        self.emit("%s = record(%r, %r, {%s}, {%s})" % (name(st.name), st.name, fields, defaults, types))
 
     def st_Global(self, st):
         self.emit("global " + ", ".join(name(n) for n in st.names))
@@ -209,6 +235,8 @@ class PyGen:
                               self.expr(e.stop) if e.stop else "")
 
     def ex_Attr(self, e, store=False):
+        if e.obj.kind == "Name" and e.obj.name in MODULES and e.obj.name not in self.user_names:
+            return "%s.%s" % (e.obj.name, e.name)
         if store:
             return "%s[%r]" % (self.expr(e.obj), e.name)
         return "attr(%s, %r)" % (self.expr(e.obj), e.name)
@@ -219,8 +247,11 @@ class PyGen:
 
 
 def to_python(source):
+    from .java import assigned_names
+    build()
     tree = parse(source)
-    g = PyGen()
+    g = PyGen(assigned_names(tree.body))
+    g.types = [declared_types(tree.body)]
     g.emit("# Converted from Echo. Needs the echo package: pip install echo-lang (or this repo's python folder)")
     g.emit("from echo.pyruntime import *")
     g.emit("")

@@ -25,17 +25,7 @@ def _list(v, fname):
 
 
 # ---- general ----
-@builtin("print", C, "print(a, b, ...) shows values, like say", needs_interp=True)
-def _print(interp, *values):
-    interp.say(*values)
-
-
-@builtin("input", C, "input(prompt) asks the user and returns text", needs_interp=True)
-def _input(interp, prompt=""):
-    return str(interp.input_fn(show(prompt)))
-
-
-@builtin("type", C, "type(x) -> number, text, list, map, yes/no, nothing, function")
+@builtin("type", C, "type(x) -> number, text, boolean, list, map, nothing, function, or a record name")
 def _type(v):
     return type_name(v)
 
@@ -249,7 +239,15 @@ def _map(interp, items, fn):
 
 @builtin("filter", C, "filter(list, fn) keeps items where fn is true", needs_interp=True)
 def _filter(interp, items, fn):
-    return [x for x in _list(items, "filter") if truthy(interp.call_value(fn, [x]))]
+    out = []
+    for x in _list(items, "filter"):
+        keep = interp.call_value(fn, [x])
+        if not isinstance(keep, bool):
+            raise EchoRuntimeError("filter() needs a function that returns true or false, not %s." % type_name(keep),
+                                   code="E303")
+        if keep:
+            out.append(x)
+    return out
 
 
 @builtin("reduce", C, "reduce(list, fn, start)", needs_interp=True)
@@ -493,18 +491,38 @@ def _wait(seconds):
     time.sleep(min(float(seconds), 60))
 
 
-@builtin("help", C, "help() lists all functions; help(name) explains one", needs_interp=True)
+@builtin("help", C, "help() lists everything; help(\"bio\") lists a module; help(\"bio.gc\") explains one function",
+         needs_interp=True)
 def _help(interp, name=None):
-    from ..stdlib import categories
-    cats = categories()
+    from ..modules import GLOBALS, MODULES
+    from ..values import Builtin, Module
+
+    def line(qual, value):
+        doc = value.doc if isinstance(value, Builtin) else ""
+        return "  " + (doc or "%s = %s" % (qual, show(value, True)))
+
     if name is None:
-        for cat, items in cats.items():
-            interp.output("== %s ==" % cat)
-            interp.output(", ".join(n for n, _ in items))
+        interp.output("Global functions:")
+        interp.output("  " + ", ".join(sorted(GLOBALS)))
+        interp.output("Modules (write module.function):")
+        for mname in sorted(MODULES):
+            interp.output("  %-7s %s" % (mname, MODULES[mname].doc))
+        interp.output('Try help("bio") or help("bio.gc").')
         return None
-    for cat, items in cats.items():
-        for n, doc in items:
-            if n == show(name):
-                interp.output("%s  [%s]" % (doc or n, cat))
-                return None
-    interp.output("No function called %s." % show(name))
+    name = show(name)
+    if name in MODULES:
+        mod = MODULES[name]
+        interp.output("%s: %s" % (name, mod.doc))
+        for member in sorted(mod.members):
+            interp.output(line(name + "." + member, mod.members[member]))
+        return None
+    if "." in name:
+        mname, member = name.split(".", 1)
+        mod = MODULES.get(mname)
+        if mod and member in mod.members:
+            interp.output(line(name, mod.members[member]))
+            return None
+    elif name in GLOBALS:
+        interp.output(line(name, GLOBALS[name]))
+        return None
+    interp.output("Nothing called %s. Run help() to see everything." % name)

@@ -6,7 +6,7 @@ import echo
 from echo.interpreter import run_source
 
 EXAMPLES_DIR = os.path.join(os.path.dirname(echo.__file__), "examples")
-ORDER = ["hello", "bio", "games", "gates", "cyber", "ml", "ai"]
+ORDER = ["hello", "bio", "types", "control", "gates", "cyber", "ml", "ai"]
 
 
 def run(code, bridge, files_dir, provider, key, model):
@@ -62,51 +62,76 @@ def example(name):
 
 
 def check(code):
-    """Returns '' if the code parses, else the error message."""
+    """'' if there are no problems, else one line per error or warning."""
+    from echo.checker import check_source
+    return "\n".join(d.format() for d in check_source(code))
+
+
+def needs_upgrade(code):
+    from echo.checker import check_source
+    return any(d.code == "E104" for d in check_source(code))
+
+
+def upgrade(code):
+    from echo.upgrade import upgrade_source
     try:
-        echo.parse(code)
-        return ""
+        return upgrade_source(code)[0]
+    except echo.EchoError:
+        return code
+
+
+def format(code):  # noqa: A001  (called from Java)
+    from echo.formatter import format_source
+    try:
+        return format_source(code)
     except echo.EchoError as e:
         return str(e)
 
 
 def reference():
-    from echo.stdlib import categories
-    lines = [SYNTAX.strip(), ""]
-    for cat, items in categories().items():
-        lines.append("== %s ==" % cat.upper())
-        for name, doc in items:
-            lines.append("  " + (doc or name))
+    from echo.modules import GLOBALS, MODULES, build
+    from echo.values import Builtin
+    build()
+    lines = [SYNTAX.strip(), "", "== GLOBAL FUNCTIONS =="]
+    for name in sorted(GLOBALS):
+        v = GLOBALS[name]
+        lines.append("  " + (v.doc if isinstance(v, Builtin) and v.doc else name))
+    lines.append("")
+    for mname in sorted(MODULES):
+        mod = MODULES[mname]
+        lines.append("== %s: %s ==" % (mname.upper(), mod.doc))
+        for name in sorted(mod.members):
+            v = mod.members[name]
+            lines.append("  " + (v.doc if isinstance(v, Builtin) and v.doc else "%s.%s" % (mname, name)))
         lines.append("")
     return "\n".join(lines)
 
 
 SYNTAX = """
-ECHO QUICK GUIDE
-One statement per line. Blocks end with `end`. Comments start with #.
+ECHO 2 QUICK GUIDE
+One statement per line. Blocks end with `end`. Comments start with #. Text uses "double quotes".
 
-set x to 5          x = 5          x += 1
-say "GC is {gc(seq)}%"             (put code inside {} in text)
+set x to 5                         set x to x + 1
+set gc_target: number to 50        (types are optional: number integer text boolean list map dna rna protein)
+say "GC is {bio.gc(seq)}%"         (put code inside {} in text)
 ask "Your name?" into name
-ask ai "Explain PCR" into answer   (needs your AI key)
 
-if x > 3 then ... else if x > 1 then ... else ... end
-repeat 3 times ... end             repeat forever ... end
-while x < 10 ... end
-for each item in list ... end      for each key, value in map ... end
-for i from 1 to 10 step 2 ... end
-break  /  continue                 (also: stop / skip)
+if x > 3 then ... else if x > 1 then ... else ... end    (conditions must be true or false)
+repeat 3 times ... end             while x < 10 ... end
+for each item in items ... end     for each key, value in map ... end
+for i from 1 to 10 step 2 ... end  break   continue
 
-define area(w, h = 1) ... return w * h end
+define area(w: number, h: number = 1) -> number ... return w * h end
 set double to fn(x) -> x * 2
-try ... catch problem ... end      fail "message"
-record Gene(name, seq = "")        Gene("gfp", "ATG")
-use "other.echo"
+try ... catch problem ... say problem.code, problem.message ... end     fail "message"
+record Gene(name: text, seq: dna = "")        Gene("gfp", "ATG")
+use "helpers.echo"                 then call helpers.function(...)
 
-Values: 12  3.5  "text"  true/false (yes/no)  nothing
-Lists: [1, 2, 3]  (positions start at 0)  items[0]  items[1:3]
+Values: 12  3.5  "text"  true  false  nothing
+Lists: [1, 2, 3]  (positions start at 0)  items[0]  items[1:3]   add item to items
 Maps:  {name: "gfp", length: 720}   m.name   m["name"]
-Maths: + - * / // % ^      Compare: == != < > <= >= is, is not, in, not in
-Logic gates: and or not xor nand nor xnor   (1/0 give 1/0, true/false give true/false)
-Call styles: gc(seq)   gc of seq   seq.gc()
+Maths: + - * / // % ^      Compare: == != < > <= >= in, not in
+Logic gates: and or not xor nand nor xnor   (true/false give true/false, 1/0 give 1/0)
+Modules: bio math random file json time gates cyber stats ml ai  ->  bio.gc(seq), math.sqrt(2), ai.ask("...")
+Errors have codes like E201. Check finds mistakes before you run. Format tidies the layout.
 """

@@ -1,14 +1,14 @@
 # Your first Echo program
 say "Hello from Echo!"
 
-set name to "Reno"
-set age to 18
+set name to "Ada"
+set age: integer to 21
 say "Hi {name}, next year you will be {age + 1}."
 
 # lists and loops
-set fruits to ["mango", "banana", "jackfruit"]
-for each fruit in fruits
-    say "I like " + fruit
+set samples to ["leaf", "root", "stem"]
+for each sample in samples
+    say "Sample: " + sample
 end
 
 for i from 1 to 5
@@ -18,15 +18,18 @@ for i from 1 to 5
     say i, "squared is", i ^ 2
 end
 
-# functions
-define greet(person, greeting = "Vanakkam")
+# functions with types
+define greet(person: text, greeting: text = "Hello") -> text
     return greeting + ", " + person + "!"
 end
-say greet("Jane")
-say greet("Paul", greeting: "Hello")
+say greet("Ada")
+say greet("Grace", greeting: "Welcome")
 
-# a map and a record
-record Student(name, course)
-set s to Student("Paul", "B.Sc. Biotechnology")
-say s
-say s.name + " studies " + s.course
+# maps and records
+set plasmid to {name: "pUC19", length: 2686}
+say plasmid.name, "is", plasmid.length, "bp"
+
+record Student(name: text, course: text)
+set student to Student("Ada", "B.Sc. Biotechnology")
+say student
+say student.name + " studies " + student.course

@@ -1,4 +1,4 @@
-"""Builds an Echo syntax tree from tokens."""
+"""Builds an Echo syntax tree from tokens (Echo 2 grammar, see docs/LANGUAGE.md)."""
 from .errors import EchoSyntaxError
 from .lexer import tokenize
 
@@ -16,18 +16,39 @@ class Node:
         return "%s(%s)" % (self.kind, items)
 
 
-BLOCK_ENDS = {"end"}
-END_WORDS = {"if", "repeat", "while", "for", "define", "try", "record"}
+class TypeSpec:
+    """A type written in code: `number`, `list of dna`, `text or nothing`."""
+
+    def __init__(self, name, of=None, optional=False, line=None):
+        self.name = name
+        self.of = of
+        self.optional = optional
+        self.line = line
+
+    def __str__(self):
+        text = self.name + (" of " + str(self.of) if self.of else "")
+        return text + (" or nothing" if self.optional else "")
+
+    __repr__ = __str__
+
+
 OR_OPS = {"or", "nor", "xor", "xnor"}
 AND_OPS = {"and", "nand"}
 COMPARE_OPS = {"==", "!=", "<", ">", "<=", ">="}
-ASSIGN_OPS = {"=", "+=", "-=", "*=", "/="}
+OLD_ASSIGN = {"=", "+=", "-=", "*=", "/="}
+REMOVED_STATEMENTS = {
+    "stop": "Write: break",
+    "skip": "Write: continue",
+    "pass": "Leave the block empty instead.",
+}
 
 
 class Parser:
     def __init__(self, tokens):
         self.tokens = tokens
         self.pos = 0
+        self.loop_depth = 0
+        self.func_depth = 0
 
     # ---- helpers ----
     @property
@@ -47,27 +68,33 @@ class Parser:
     def at_op(self, *ops):
         return self.tok.kind == "OP" and self.tok.value in ops
 
+    def at_name(self, word):
+        return self.tok.kind == "NAME" and self.tok.value == word
+
     def advance(self):
         t = self.tok
         self.pos += 1
         return t
 
+    def fail(self, message, line=None, hint=None, code=None):
+        raise EchoSyntaxError(message, line or self.tok.line, hint, code)
+
     def expect_kw(self, word, hint=None):
         if not self.at_kw(word):
-            raise EchoSyntaxError("Expected '%s' but found %s." % (word, self.describe()), self.tok.line, hint)
+            self.fail("Expected '%s' but found %s." % (word, self.describe()), hint=hint)
         return self.advance()
 
     def expect_op(self, op, hint=None):
         if not self.at_op(op):
-            raise EchoSyntaxError("Expected '%s' but found %s." % (op, self.describe()), self.tok.line, hint)
+            self.fail("Expected '%s' but found %s." % (op, self.describe()), hint=hint)
         return self.advance()
 
     def expect_name(self, what="a name"):
         if self.tok.kind != "NAME":
-            hint = None
             if self.tok.kind == "KEYWORD":
-                hint = "'%s' is an Echo word and can't be used as a name." % self.tok.value
-            raise EchoSyntaxError("Expected %s but found %s." % (what, self.describe()), self.tok.line, hint)
+                self.fail("'%s' is an Echo keyword and can't be used as %s." % (self.tok.value, what),
+                          hint="Choose another name, e.g. %s_value." % self.tok.value, code="E105")
+            self.fail("Expected %s but found %s." % (what, self.describe()))
         return self.advance().value
 
     def describe(self):
@@ -87,9 +114,32 @@ class Parser:
     def end_of_statement(self):
         if self.at("NEWLINE"):
             self.advance()
-        elif not self.at("EOF"):
-            raise EchoSyntaxError("I didn't expect %s here." % self.describe(), self.tok.line,
-                                  "Put each statement on its own line.")
+            return
+        if self.at("EOF"):
+            return
+        if self.at_op(*OLD_ASSIGN):
+            self.old_assign()
+        if self.at_kw("is"):
+            self.old_is()
+        if self.at_name("of"):
+            self.old_of()
+        self.fail("Unexpected %s." % self.describe(), hint="Put each statement on its own line.")
+
+    # ---- Echo 1 forms with clear messages ----
+    def old_assign(self, target="x"):
+        op = self.tok.value
+        if op == "=":
+            self.fail("'=' is not used to set variables in Echo 2.", hint="Write: set %s to value" % target,
+                      code="E104")
+        self.fail("'%s' was removed in Echo 2." % op,
+                  hint="Write: set %s to %s %s value" % (target, target, op[0]), code="E104")
+
+    def old_is(self):
+        self.fail("'is' was removed in Echo 2.", hint="Compare with == or != (e.g. if x == 3 then).", code="E104")
+
+    def old_of(self):
+        self.fail("'name of value' calls were removed in Echo 2.", hint="Call functions with brackets: length(seq)",
+                  code="E104")
 
     # ---- program and blocks ----
     def parse_program(self):
@@ -105,52 +155,84 @@ class Parser:
         self.skip_newlines()
         while not (self.tok.kind == "KEYWORD" and self.tok.value in stops):
             if self.at("EOF"):
-                raise EchoSyntaxError("The '%s' block that starts on line %d has no 'end'." % (opener, line), line)
+                self.fail("The '%s' block that starts on line %d has no 'end'." % (opener, line), line,
+                          "Close it with end.", code="E102")
             body.append(self.statement())
             self.skip_newlines()
         return body
 
     def finish_end(self):
         self.expect_kw("end")
-        if self.tok.kind == "KEYWORD" and self.tok.value in END_WORDS:
-            self.advance()
+        if self.tok.kind == "KEYWORD" and self.tok.value in ("if", "repeat", "while", "for", "define", "try"):
+            self.fail("'end %s' was removed in Echo 2." % self.tok.value, hint="Write just: end", code="E104")
         self.end_of_statement()
+
+    def loop_body(self, opener, line):
+        self.loop_depth += 1
+        try:
+            return self.block({"end"}, opener, line)
+        finally:
+            self.loop_depth -= 1
 
     # ---- statements ----
     def statement(self):
         t = self.tok
         line = t.line
         if t.kind == "KEYWORD":
-            w = t.value
-            method = getattr(self, "st_" + w, None)
+            method = getattr(self, "st_" + t.value, None)
             if method:
                 return method()
+        if t.kind == "NAME" and t.value in REMOVED_STATEMENTS and self.peek().kind in ("NEWLINE", "EOF"):
+            self.fail("'%s' was removed in Echo 2." % t.value, hint=REMOVED_STATEMENTS[t.value], code="E104")
         expr = self.expression()
-        if self.at_op(*ASSIGN_OPS):
-            op = self.advance().value
-            self.check_target(expr)
-            value = self.expression()
-            self.end_of_statement()
-            return Node("Set", line, target=expr, value=value, op=op)
+        if self.at_op(*OLD_ASSIGN):
+            self.old_assign(expr.name if expr.kind == "Name" else "x")
         self.end_of_statement()
         return Node("ExprStmt", line, expr=expr)
 
     def check_target(self, expr):
         if expr.kind not in ("Name", "Index", "Attr"):
-            raise EchoSyntaxError("You can only set a name, a list item or a field.", expr.line)
+            self.fail("Only a name, a list item or a field can be set.", expr.line, code="E106")
+
+    def type_spec(self, nested=False):
+        line = self.tok.line
+        if self.at_kw("nothing"):
+            self.advance()
+            return TypeSpec("nothing", line=line)
+        if self.tok.kind != "NAME":
+            self.fail("Expected a type (like number, text, list of dna) but found %s." % self.describe(),
+                      code="E304")
+        name = self.advance().value
+        of = None
+        if self.at_name("of"):
+            self.advance()
+            of = self.type_spec(nested=True)
+        spec = TypeSpec(name, of, line=line)
+        if not nested and self.at_kw("or"):
+            self.advance()
+            self.expect_kw("nothing", "Only 'or nothing' can follow a type, e.g. text or nothing.")
+            spec.optional = True
+        return spec
 
     def st_set(self):
         line = self.advance().line
         target = self.postfix()
         self.check_target(target)
-        op = "="
-        if self.at_op(*ASSIGN_OPS):
-            op = self.advance().value
-        else:
-            self.expect_kw("to", "Write: set name to value")
+        type_ = None
+        if self.at_op(":"):
+            if target.kind != "Name":
+                self.fail("Only plain variables can have a type.", hint="Give record fields their type in the record.")
+            self.advance()
+            type_ = self.type_spec()
+        if self.at_op(*OLD_ASSIGN):
+            name = target.name if target.kind == "Name" else "x"
+            if self.tok.value == "=":
+                self.fail("Use 'to' after set.", hint="Write: set %s to value" % name, code="E104")
+            self.old_assign(name)
+        self.expect_kw("to", "Write: set name to value")
         value = self.expression()
         self.end_of_statement()
-        return Node("Set", line, target=target, value=value, op=op)
+        return Node("Set", line, target=target, value=value, type=type_)
 
     def st_add(self):
         line = self.advance().line
@@ -173,38 +255,36 @@ class Parser:
 
     def st_ask(self):
         line = self.advance().line
-        ai = False
-        if self.tok.kind == "NAME" and self.tok.value == "ai":
-            self.advance()
-            ai = True
+        if self.at_name("ai"):
+            self.fail("'ask ai' was removed in Echo 2.", hint='Write: set answer to ai.ask("your question")',
+                      code="E104")
         prompt = self.expression()
-        name = None
-        if self.at_kw("into"):
-            self.advance()
-            name = self.expect_name("a name to store the answer")
-        elif not ai:
-            raise EchoSyntaxError("Expected 'into' after ask.", line, 'Write: ask "Your name?" into name')
+        if not self.at_kw("into"):
+            self.fail("Expected 'into' after the question.", line, 'Write: ask "Your name?" into name')
+        self.advance()
+        name = self.expect_name("a name to store the answer")
         self.end_of_statement()
-        return Node("Ask", line, prompt=prompt, name=name, ai=ai)
+        return Node("Ask", line, prompt=prompt, name=name)
+
+    def condition(self, word):
+        cond = self.expression()
+        if not self.at_kw("then"):
+            if self.at_kw("is"):
+                self.old_is()
+            self.fail("Expected 'then' after the %s condition." % word, hint="Write: %s x > 3 then" % word)
+        self.advance()
+        return cond
 
     def st_if(self):
         line = self.advance().line
-        branches = []
-        cond = self.expression()
-        if self.at_kw("then"):
-            self.advance()
-        body = self.block({"else", "end"}, "if", line)
-        branches.append((cond, body))
+        branches = [(self.condition("if"), self.block({"else", "end"}, "if", line))]
         else_body = None
         while self.at_kw("else"):
             eline = self.advance().line
             if self.at_kw("if"):
                 self.advance()
-                c = self.expression()
-                if self.at_kw("then"):
-                    self.advance()
-                b = self.block({"else", "end"}, "else if", eline)
-                branches.append((c, b))
+                c = self.condition("else if")
+                branches.append((c, self.block({"else", "end"}, "else if", eline)))
             else:
                 else_body = self.block({"end"}, "else", eline)
                 break
@@ -213,21 +293,20 @@ class Parser:
 
     def st_repeat(self):
         line = self.advance().line
-        if self.tok.kind == "NAME" and self.tok.value == "forever":
-            self.advance()
-            body = self.block(BLOCK_ENDS, "repeat", line)
-            self.finish_end()
-            return Node("While", line, cond=Node("Bool", line, value=True), body=body)
+        if self.at_name("forever"):
+            self.fail("'repeat forever' was removed in Echo 2.", hint="Write: while true", code="E104")
         count = self.expression()
         self.expect_kw("times", "Write: repeat 5 times")
-        body = self.block(BLOCK_ENDS, "repeat", line)
+        body = self.loop_body("repeat", line)
         self.finish_end()
         return Node("Repeat", line, count=count, body=body)
 
     def st_while(self):
         line = self.advance().line
         cond = self.expression()
-        body = self.block(BLOCK_ENDS, "while", line)
+        if self.at_kw("then"):
+            self.fail("'while' does not use 'then'.", hint="Write: while count > 0")
+        body = self.loop_body("while", line)
         self.finish_end()
         return Node("While", line, cond=cond, body=body)
 
@@ -235,75 +314,96 @@ class Parser:
         line = self.advance().line
         if self.at_kw("each"):
             self.advance()
-        var = self.expect_name("a loop name")
-        if self.at_kw("from"):
-            self.advance()
-            start = self.expression()
-            self.expect_kw("to")
-            stop = self.expression()
-            step = None
-            if self.at_kw("step"):
+            var = self.expect_name("a loop name")
+            var2 = None
+            if self.at_op(","):
                 self.advance()
-                step = self.expression()
-            body = self.block(BLOCK_ENDS, "for", line)
+                var2 = self.expect_name("a second loop name")
+            self.expect_kw("in", "Write: for each item in list")
+            iterable = self.expression()
+            body = self.loop_body("for", line)
             self.finish_end()
-            return Node("ForRange", line, var=var, start=start, stop=stop, step=step, body=body)
-        var2 = None
-        if self.at_op(","):
+            return Node("ForEach", line, var=var, var2=var2, iterable=iterable, body=body)
+        var = self.expect_name("a loop name")
+        if self.at_kw("in") or self.at_op(","):
+            self.fail("Loops over items need 'each'.", hint="Write: for each %s in ..." % var, code="E104")
+        self.expect_kw("from", "Write: for i from 1 to 10   or   for each item in list")
+        start = self.expression()
+        self.expect_kw("to")
+        stop = self.expression()
+        step = None
+        if self.at_kw("step"):
             self.advance()
-            var2 = self.expect_name("a second loop name")
-        self.expect_kw("in", "Write: for each item in list   or   for i from 1 to 10")
-        iterable = self.expression()
-        body = self.block(BLOCK_ENDS, "for", line)
+            step = self.expression()
+        body = self.loop_body("for", line)
         self.finish_end()
-        return Node("ForEach", line, var=var, var2=var2, iterable=iterable, body=body)
+        return Node("ForRange", line, var=var, start=start, stop=stop, step=step, body=body)
 
-    def _simple(self, kind):
+    def _simple(self, kind, word):
         line = self.advance().line
+        if self.loop_depth == 0:
+            self.fail("'%s' can only be used inside a loop." % word, line, code="E107")
         self.end_of_statement()
         return Node(kind, line)
 
     def st_break(self):
-        return self._simple("Break")
-
-    def st_stop(self):
-        return self._simple("Break")
+        return self._simple("Break", "break")
 
     def st_continue(self):
-        return self._simple("Continue")
+        return self._simple("Continue", "continue")
 
-    def st_skip(self):
-        return self._simple("Continue")
-
-    def st_pass(self):
-        return self._simple("Pass")
-
-    def params(self):
+    def params(self, what="parameter"):
         params = []
-        if self.at_op("("):
-            self.advance()
-            while not self.at_op(")"):
-                name = self.expect_name("a parameter name")
-                default = None
-                if self.at_op("="):
-                    self.advance()
-                    default = self.expression()
-                params.append((name, default))
-                if not self.at_op(")"):
-                    self.expect_op(",")
-            self.advance()
+        self.expect_op("(", "Write the %ss in brackets, e.g. (seq, salt = 50)." % what)
+        self.skip_newlines()
+        seen_default = False
+        while not self.at_op(")"):
+            pline = self.tok.line
+            name = self.expect_name("a %s name" % what)
+            type_ = None
+            if self.at_op(":"):
+                self.advance()
+                type_ = self.type_spec()
+            default = None
+            if self.at_op("="):
+                self.advance()
+                default = self.expression()
+                seen_default = True
+            elif seen_default:
+                self.fail("'%s' needs a default value because an earlier %s has one." % (name, what), pline)
+            if any(p[0] == name for p in params):
+                self.fail("The %s '%s' is listed twice." % (what, name), pline)
+            params.append((name, default, type_))
+            self.skip_newlines()
+            if not self.at_op(")"):
+                self.expect_op(",")
+                self.skip_newlines()
+        self.advance()
         return params
 
     def st_define(self):
         line = self.advance().line
         name = self.expect_name("a function name")
         params = self.params()
-        body = self.block(BLOCK_ENDS, "define", line)
+        returns = None
+        if self.at_op("->"):
+            self.advance()
+            returns = self.type_spec()
+        saved_loop = self.loop_depth
+        self.loop_depth = 0
+        self.func_depth += 1
+        try:
+            body = self.block({"end"}, "define", line)
+        finally:
+            self.loop_depth = saved_loop
+            self.func_depth -= 1
         self.finish_end()
-        return Node("Define", line, name=name, params=params, body=body)
+        return Node("Define", line, name=name, params=params, returns=returns, body=body)
 
     def st_return(self):
         line = self.advance().line
+        if self.func_depth == 0:
+            self.fail("'return' can only be used inside a function.", line, code="E107")
         value = None
         if not self.at("NEWLINE") and not self.at("EOF"):
             value = self.expression()
@@ -318,7 +418,7 @@ class Parser:
             cline = self.advance().line
             if self.tok.kind == "NAME":
                 err = self.advance().value
-            handler = self.block(BLOCK_ENDS, "catch", cline)
+            handler = self.block({"end"}, "catch", cline)
         self.finish_end()
         return Node("Try", line, body=body, err=err, handler=handler)
 
@@ -330,18 +430,28 @@ class Parser:
 
     def st_use(self):
         line = self.advance().line
-        if self.at("STRING"):
-            parts = self.advance().value
-            path = "".join(p[1] for p in parts if p[0] == "text")
-        else:
-            path = self.expect_name("a file or library name")
+        if not self.at("STRING"):
+            if self.tok.kind == "NAME":
+                self.fail("Built-in modules don't need 'use'.",
+                          hint="Just write %s.function(...). 'use' is for your own .echo files." % self.tok.value,
+                          code="E104")
+            self.fail("Expected a file name in quotes.", hint='Write: use "helpers.echo"')
+        parts = self.advance().value
+        path = "".join(p[1] for p in parts if p[0] == "text")
+        alias = None
+        if self.at_kw("as"):
+            self.advance()
+            alias = self.expect_name("a module name")
         self.end_of_statement()
-        return Node("Use", line, path=path)
+        return Node("Use", line, path=path, alias=alias)
 
     def st_record(self):
         line = self.advance().line
         name = self.expect_name("a record name")
-        fields = [p for p in self.params()]
+        if not name[0].isupper():
+            self.fail("Record names start with a capital letter.", line,
+                      "Write: record %s(...)" % (name[0].upper() + name[1:]))
+        fields = self.params("field")
         self.end_of_statement()
         return Node("Record", line, name=name, fields=fields)
 
@@ -384,12 +494,6 @@ class Parser:
             t = self.tok
             if self.at_op(*COMPARE_OPS):
                 op = self.advance().value
-            elif self.at_kw("is"):
-                self.advance()
-                op = "=="
-                if self.at_kw("not"):
-                    self.advance()
-                    op = "!="
             elif self.at_kw("in"):
                 self.advance()
                 op = "in"
@@ -397,6 +501,8 @@ class Parser:
                 self.advance()
                 self.advance()
                 op = "not in"
+            elif self.at_kw("is"):
+                self.old_is()
             else:
                 return left
             left = Node("Compare", t.line, op=op, left=left, right=self.additive())
@@ -419,9 +525,6 @@ class Parser:
         if self.at_op("-"):
             t = self.advance()
             return Node("Neg", t.line, expr=self.unary())
-        if self.at_op("+"):
-            self.advance()
-            return self.unary()
         return self.power()
 
     def power(self):
@@ -438,10 +541,7 @@ class Parser:
                 expr = self.call(expr)
             elif self.at_op("["):
                 line = self.advance().line
-                if self.at_op(":"):
-                    start = None
-                else:
-                    start = self.expression()
+                start = None if self.at_op(":") else self.expression()
                 if self.at_op(":"):
                     self.advance()
                     stop = None if self.at_op("]") else self.expression()
@@ -453,12 +553,10 @@ class Parser:
             elif self.at_op("."):
                 line = self.advance().line
                 if self.tok.kind not in ("NAME", "KEYWORD"):
-                    raise EchoSyntaxError("Expected a field name after '.'.", line)
+                    self.fail("Expected a name after '.'.", line)
                 expr = Node("Attr", line, obj=expr, name=self.advance().value)
-            elif (expr.kind == "Name" and self.tok.kind == "NAME" and self.tok.value == "of"):
-                line = self.advance().line
-                arg = self.postfix()
-                expr = Node("Call", line, func=expr, args=[arg], kwargs=[])
+            elif expr.kind == "Name" and self.at_name("of"):
+                self.old_of()
             else:
                 return expr
 
@@ -470,10 +568,12 @@ class Parser:
             if self.tok.kind == "NAME" and self.peek().kind == "OP" and self.peek().value == ":":
                 key = self.advance().value
                 self.advance()
+                if any(k == key for k, _ in kwargs):
+                    self.fail("The setting '%s' is given twice." % key)
                 kwargs.append((key, self.expression()))
             else:
                 if kwargs:
-                    raise EchoSyntaxError("Put named values after the normal ones.", self.tok.line)
+                    self.fail("Put named values after the normal ones.", hint="f(1, 2, size: 3)")
                 args.append(self.expression())
             self.skip_newlines()
             if not self.at_op(")"):
@@ -500,19 +600,16 @@ class Parser:
                         tk.line = p[2]
                     e = sub.expression()
                     if not sub.at("NEWLINE") and not sub.at("EOF"):
-                        raise EchoSyntaxError("Bad expression inside {} in text.", line)
+                        self.fail("Bad expression inside {} in text.", line)
                     parts.append(e)
             return Node("Str", line, parts=parts)
         if t.kind == "NAME":
             self.advance()
             return Node("Name", line, name=t.value)
         if t.kind == "KEYWORD":
-            if t.value in ("true", "yes"):
+            if t.value in ("true", "false"):
                 self.advance()
-                return Node("Bool", line, value=True)
-            if t.value in ("false", "no"):
-                self.advance()
-                return Node("Bool", line, value=False)
+                return Node("Bool", line, value=t.value == "true")
             if t.value == "nothing":
                 self.advance()
                 return Node("Nothing", line)
@@ -558,9 +655,11 @@ class Parser:
             self.advance()
             return Node("Map", line, pairs=pairs)
         if t.kind == "KEYWORD":
-            raise EchoSyntaxError("'%s' can't be used here." % t.value, line,
-                                  "'%s' is an Echo word, so it can't be a name. Try another name." % t.value)
-        raise EchoSyntaxError("Expected a value but found %s." % self.describe(), line)
+            if t.value == "is":
+                self.old_is()
+            self.fail("'%s' can't be used here." % t.value, line,
+                      "'%s' is an Echo keyword, so it can't be a name." % t.value, code="E105")
+        self.fail("Expected a value but found %s." % self.describe(), line)
 
 
 def parse(source):
